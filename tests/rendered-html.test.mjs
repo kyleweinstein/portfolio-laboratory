@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -24,6 +25,16 @@ test("server renders the portfolio dashboard shell", async () => {
   assert.match(html, /Maximum Sharpe/);
   assert.match(html, /not investment, tax, or legal advice/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
+});
+
+test("client analysis includes pairing, overlays, and rebalance controls", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /Multi-asset performance overlay/);
+  assert.match(source, /Lowest-correlation opportunities/);
+  assert.match(source, /Suggested rebalance buckets/);
+  assert.match(source, /Volatility harvesting is not guaranteed/);
+  assert.match(source, /rebalancePotential: spreadVolatility \* \(1 - correlation\[a\]\[b\]\) \/ 2/);
+  assert.match(source, /triggered: drift >= rebalanceBand \/ 100/);
 });
 
 test("market route rejects unsafe symbols before source access", async () => {
