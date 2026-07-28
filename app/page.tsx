@@ -2,24 +2,95 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Holding = { symbol: string; weight: number; style: string; sector: string; factor: string };
+const STYLE_OPTIONS = [
+  "Large Growth", "Large Blend", "Large Value", "Mid Cap", "Small Cap",
+  "International Developed", "Emerging Markets", "Fixed Income", "Real Assets",
+] as const;
+const SECTOR_OPTIONS = [
+  "Technology", "Communication Services", "Consumer Discretionary", "Consumer Staples",
+  "Energy", "Financials", "Health Care", "Industrials", "Materials", "Real Estate",
+  "Utilities", "Diversified Equity", "Fixed Income", "Commodities",
+] as const;
+const FACTOR_OPTIONS = [
+  "Market", "Value", "Momentum", "Quality", "Low Volatility", "Size",
+  "Duration", "Inflation", "Real Assets",
+] as const;
+type StyleName = typeof STYLE_OPTIONS[number];
+type SectorName = typeof SECTOR_OPTIONS[number];
+type FactorName = typeof FACTOR_OPTIONS[number];
+type Holding = { symbol: string; weight: number };
 type Series = { dates: string[]; prices: number[] };
 type Stat = { annualReturn: number; volatility: number; sharpe: number; maxDrawdown: number; var95: number; cvar95: number; beta?: number };
 type PairInsight = { a: number; b: number; correlation: number; spreadVolatility: number; rebalancePotential: number };
 type ChartSeries = { name: string; returns: number[]; color: string };
 type RadarDatum = { label: string; value: number };
+type CategoryRow = { name: string; exposure: number; suggestions: { name: string; correlation: number }[] };
+type Classification<T extends string> = {
+  name: T;
+  correlation: number;
+  runnerUp: T | null;
+  runnerUpCorrelation: number;
+};
+type HoldingClassification = {
+  symbol: string;
+  style: Classification<StyleName>;
+  sector: Classification<SectorName>;
+  factor: Classification<FactorName>;
+};
+type CategoryView = {
+  rows: CategoryRow[];
+  additions: { name: string; exposure: number; correlation: number; score: number }[];
+  covered: number;
+  total: number;
+};
 
 const DEFAULT_HOLDINGS: Holding[] = [
-  { symbol: "SPY", weight: 35, style: "Blend", sector: "Diversified", factor: "Market" },
-  { symbol: "QQQ", weight: 25, style: "Growth", sector: "Technology", factor: "Momentum" },
-  { symbol: "IEF", weight: 20, style: "Defensive", sector: "Fixed income", factor: "Duration" },
-  { symbol: "GLD", weight: 10, style: "Defensive", sector: "Commodities", factor: "Inflation" },
-  { symbol: "VNQ", weight: 10, style: "Income", sector: "Real estate", factor: "Real assets" },
+  { symbol: "SPY", weight: 35 },
+  { symbol: "QQQ", weight: 25 },
+  { symbol: "IEF", weight: 20 },
+  { symbol: "GLD", weight: 10 },
+  { symbol: "VNQ", weight: 10 },
 ];
 const COLORS = ["#FF3B00", "#2E5CC8", "#1B6B45", "#7B3FB5", "#9A6A00", "#111111"];
-const STYLE_OPTIONS = ["Blend", "Growth", "Value", "Defensive", "Income"];
-const SECTOR_OPTIONS = ["Diversified", "Technology", "Fixed income", "Commodities", "Real estate", "Healthcare", "Financials", "Industrials", "Consumer", "Energy", "Utilities", "Other"];
-const FACTOR_OPTIONS = ["Market", "Momentum", "Value", "Quality", "Low volatility", "Size", "Duration", "Inflation", "Real assets"];
+const STYLE_PROXIES: Record<StyleName, string> = {
+  "Large Growth": "VUG",
+  "Large Blend": "SPY",
+  "Large Value": "VTV",
+  "Mid Cap": "VO",
+  "Small Cap": "VB",
+  "International Developed": "VEA",
+  "Emerging Markets": "VWO",
+  "Fixed Income": "IEF",
+  "Real Assets": "GLD",
+};
+const SECTOR_PROXIES: Record<SectorName, string> = {
+  "Technology": "XLK",
+  "Communication Services": "XLC",
+  "Consumer Discretionary": "XLY",
+  "Consumer Staples": "XLP",
+  "Energy": "XLE",
+  "Financials": "XLF",
+  "Health Care": "XLV",
+  "Industrials": "XLI",
+  "Materials": "XLB",
+  "Real Estate": "XLRE",
+  "Utilities": "XLU",
+  "Diversified Equity": "SPY",
+  "Fixed Income": "IEF",
+  "Commodities": "GLD",
+};
+const FACTOR_PROXIES: Record<FactorName, string> = {
+  "Market": "SPY",
+  "Value": "VLUE",
+  "Momentum": "MTUM",
+  "Quality": "QUAL",
+  "Low Volatility": "USMV",
+  "Size": "VB",
+  "Duration": "IEF",
+  "Inflation": "TIP",
+  "Real Assets": "GLD",
+};
+const ALL_PROXY_SYMBOLS = [...new Set([...Object.values(STYLE_PROXIES), ...Object.values(SECTOR_PROXIES), ...Object.values(FACTOR_PROXIES)])];
 
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 const sampleStd = (xs: number[]) => Math.sqrt(xs.reduce((a, x) => a + (x - mean(xs)) ** 2, 0) / Math.max(1, xs.length - 1));
@@ -33,10 +104,8 @@ const normalizeWeights = (values: number[]) => {
   return total > 0 ? clean.map(value => value / total) : clean.map(() => 1 / Math.max(clean.length, 1));
 };
 
-function buildExposureData(holdings: Holding[], weights: number[], field: "style" | "sector" | "factor", options: string[]): RadarDatum[] {
-  const totals = new Map<string, number>();
-  holdings.forEach((holding, index) => totals.set(holding[field], (totals.get(holding[field]) || 0) + (weights[index] || 0)));
-  const ranked = [...totals].map(([label, value]) => ({ label, value })).filter(item => item.value > 0).sort((a, b) => b.value - a.value);
+function radarDataFromView(view: CategoryView, options: readonly string[]): RadarDatum[] {
+  const ranked = view.rows.map(row => ({ label: row.name, value: row.exposure })).sort((a, b) => b.value - a.value);
   const visible = ranked.length > 6
     ? [...ranked.slice(0, 5), { label: "Other", value: ranked.slice(5).reduce((sum, item) => sum + item.value, 0) }]
     : ranked;
@@ -47,13 +116,25 @@ function buildExposureData(holdings: Holding[], weights: number[], field: "style
   return visible;
 }
 
+function correlationFromSeries(a?: Series, b?: Series) {
+  if (!a || !b) return NaN;
+  const left = new Map(a.dates.map((date, i) => [date, a.prices[i]]));
+  const right = new Map(b.dates.map((date, i) => [date, b.prices[i]]));
+  const dates = [...left.keys()].filter(date => right.has(date)).sort();
+  if (dates.length < 60) return NaN;
+  const aReturns = dates.slice(1).map((date, i) => Math.log((left.get(date) as number) / (left.get(dates[i]) as number)));
+  const bReturns = dates.slice(1).map((date, i) => Math.log((right.get(date) as number) / (right.get(dates[i]) as number)));
+  const denominator = sampleStd(aReturns) * sampleStd(bReturns);
+  return denominator ? covariance(aReturns, bReturns) / denominator : NaN;
+}
+
 function fetchSeries(symbol: string, years: number): Promise<Series> {
   const url = `/api/market?symbol=${encodeURIComponent(symbol)}&years=${years}`;
   return fetch(url).then(async (res) => {
-    const json = await res.json().catch(() => ({}));
+    const json = await res.json().catch(() => ({})) as { error?: string; dates?: string[]; prices?: number[] };
     if (!res.ok) throw new Error(json?.error || `${symbol}: data request failed (${res.status})`);
     const pairs = (json?.dates || []).map((date: string, i: number) => [date, json?.prices?.[i]] as const)
-      .filter((pair: readonly [string, number]) => Number.isFinite(pair[1]) && pair[1] > 0);
+      .filter((pair): pair is readonly [string, number] => Number.isFinite(pair[1]) && (pair[1] ?? 0) > 0);
     if (pairs.length < 60) throw new Error(`${symbol}: insufficient price history`);
     return { dates: pairs.map(pair => pair[0]), prices: pairs.map(pair => pair[1]) };
   });
@@ -109,6 +190,13 @@ function classifyCorrelation(correlation: number) {
   return "High overlap";
 }
 
+function classificationConfidence(primary: number, runnerUp: number) {
+  const gap = primary - runnerUp;
+  if (primary >= .8 && gap >= .08) return "High";
+  if (primary >= .6 && gap >= .03) return "Moderate";
+  return "Low";
+}
+
 function App() {
   const [holdings, setHoldings] = useState<Holding[]>(DEFAULT_HOLDINGS);
   const [benchmark, setBenchmark] = useState("SPY");
@@ -124,24 +212,16 @@ function App() {
   const [selectedSeries, setSelectedSeries] = useState<string[]>(["Portfolio", "SPY", "QQQ"]);
   const didAutoLoad = useRef(false);
 
-  const activeHoldings = holdings
+  const activeHoldings = useMemo(() => holdings
     .map((holding, rowIndex) => ({ ...holding, rowIndex, symbol: holding.symbol.trim().toUpperCase() }))
-    .filter(holding => Boolean(holding.symbol));
-  const symbols = activeHoldings.map(holding => holding.symbol);
+    .filter(holding => Boolean(holding.symbol)), [holdings]);
+  const symbols = useMemo(() => activeHoldings.map(holding => holding.symbol), [activeHoldings]);
   const allocationTotal = activeHoldings.reduce((sum, holding) => sum + (Number(holding.weight) || 0), 0);
-  const allocationWeights = normalizeWeights(activeHoldings.map(holding => holding.weight));
-  const styleExposure = buildExposureData(activeHoldings, allocationWeights, "style", STYLE_OPTIONS);
-  const sectorExposure = buildExposureData(activeHoldings, allocationWeights, "sector", SECTOR_OPTIONS);
-  const factorExposure = buildExposureData(activeHoldings, allocationWeights, "factor", FACTOR_OPTIONS);
-
-  useEffect(() => {
-    const valid = new Set(["Portfolio", ...symbols]);
-    setSelectedSeries(previous => {
-      const kept = previous.filter(name => valid.has(name));
-      if (kept.length >= 2) return kept;
-      return ["Portfolio", ...symbols.slice(0, 2)].slice(0, Math.min(3, symbols.length + 1));
-    });
-  }, [symbols.join("|")]);
+  const selectableSeries = ["Portfolio", ...symbols];
+  const keptSeries = selectedSeries.filter(name => selectableSeries.includes(name));
+  const effectiveSelectedSeries = keptSeries.length >= 2
+    ? keptSeries
+    : selectableSeries.slice(0, Math.min(3, selectableSeries.length));
 
   const calculation = useMemo(() => {
     if (!symbols.length || !symbols.every(symbol => data[symbol]) || !data[benchmark]) return null;
@@ -215,6 +295,89 @@ function App() {
       };
     });
 
+    const portfolioCorrelation = (proxy: Series) => {
+      const proxyReturns = new Map(proxy.dates.slice(1).map((date, i) => [date, Math.log(proxy.prices[i + 1] / proxy.prices[i])]));
+      const paired = aligned.dates
+        .map((date, i) => [portfolioReturns[i], proxyReturns.get(date)] as const)
+        .filter((pair): pair is readonly [number, number] => Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
+      if (paired.length < 60) return NaN;
+      const left = paired.map(pair => pair[0]);
+      const right = paired.map(pair => pair[1]);
+      const denominator = sampleStd(left) * sampleStd(right);
+      return denominator ? covariance(left, right) / denominator : NaN;
+    };
+
+    const inferCategory = <T extends string>(
+      asset: Series,
+      options: readonly T[],
+      proxies: Record<T, string>,
+    ): Classification<T> => {
+      const ranked = options
+        .map(name => ({ name, correlation: correlationFromSeries(asset, data[proxies[name]]) }))
+        .filter(item => Number.isFinite(item.correlation))
+        .sort((a, b) => b.correlation - a.correlation);
+      const best = ranked[0] || { name: options[0], correlation: NaN };
+      const runnerUp = ranked[1] || null;
+      return {
+        name: best.name,
+        correlation: best.correlation,
+        runnerUp: runnerUp?.name || null,
+        runnerUpCorrelation: runnerUp?.correlation ?? NaN,
+      };
+    };
+
+    const classifications: HoldingClassification[] = activeHoldings.map(holding => ({
+      symbol: holding.symbol,
+      style: inferCategory(data[holding.symbol], STYLE_OPTIONS, STYLE_PROXIES),
+      sector: inferCategory(data[holding.symbol], SECTOR_OPTIONS, SECTOR_PROXIES),
+      factor: inferCategory(data[holding.symbol], FACTOR_OPTIONS, FACTOR_PROXIES),
+    }));
+
+    const buildCategoryView = <T extends string>(
+      options: readonly T[],
+      proxies: Record<T, string>,
+      field: "style" | "sector" | "factor",
+    ): CategoryView => {
+      const exposures = new Map<T, number>(options.map(option => [option, 0]));
+      classifications.forEach((classification, index) => {
+        const category = classification[field].name as T;
+        exposures.set(category, (exposures.get(category) || 0) + targetWeights[index]);
+      });
+      const available = options.filter(option => data[proxies[option]]);
+      const pairCorrelation = (left: T, right: T) =>
+        correlationFromSeries(data[proxies[left]], data[proxies[right]]);
+      const rows = options
+        .filter(option => (exposures.get(option) || 0) > .0005)
+        .map(option => ({
+          name: option,
+          exposure: exposures.get(option) || 0,
+          suggestions: available
+            .filter(candidate => candidate !== option)
+            .map(candidate => ({ name: candidate, correlation: pairCorrelation(option, candidate) }))
+            .filter(candidate => Number.isFinite(candidate.correlation))
+            .sort((a, b) => a.correlation - b.correlation)
+            .slice(0, 3),
+        }))
+        .sort((a, b) => b.exposure - a.exposure);
+      const neutralWeight = 1 / Math.max(available.length, 1);
+      const additions = available
+        .map(option => {
+          const exposure = exposures.get(option) || 0;
+          const correlation = portfolioCorrelation(data[proxies[option]]);
+          const underweight = Math.max(0, neutralWeight - exposure) / neutralWeight;
+          const diversification = Number.isFinite(correlation) ? (1 - correlation) / 2 : 0;
+          return { name: option, exposure, correlation, score: underweight * diversification };
+        })
+        .filter(option => option.exposure < neutralWeight * .8 && Number.isFinite(option.correlation))
+        .sort((a, b) => b.score - a.score || a.correlation - b.correlation)
+        .slice(0, 3);
+      return { rows, additions, covered: available.length, total: options.length };
+    };
+
+    const styleView = buildCategoryView(STYLE_OPTIONS, STYLE_PROXIES, "style");
+    const sectorView = buildCategoryView(SECTOR_OPTIONS, SECTOR_PROXIES, "sector");
+    const factorView = buildCategoryView(FACTOR_OPTIONS, FACTOR_PROXIES, "factor");
+
     return {
       aligned,
       assetReturns,
@@ -228,8 +391,12 @@ function App() {
       correlation,
       pairs,
       buckets,
+      classifications,
+      styleView,
+      sectorView,
+      factorView,
     };
-  }, [data, symbols.join("|"), holdings, benchmark, riskFreeRate, rebalanceBand, driftDays]);
+  }, [data, activeHoldings, symbols, benchmark, riskFreeRate, rebalanceBand, driftDays]);
 
   async function refresh() {
     setLoading(true);
@@ -237,9 +404,13 @@ function App() {
     setOptimized(null);
     try {
       if (new Set(symbols).size !== symbols.length) throw new Error("Each holding symbol must be unique.");
-      const unique = [...new Set([...symbols, benchmark.toUpperCase()])];
-      const results = await Promise.all(unique.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
-      setData(Object.fromEntries(results));
+      const coreSymbols = [...new Set([...symbols, benchmark.toUpperCase()])];
+      const coreResults = await Promise.all(coreSymbols.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
+      setData(Object.fromEntries(coreResults));
+      const proxySymbols = ALL_PROXY_SYMBOLS.filter(symbol => !coreSymbols.includes(symbol));
+      const proxyResults = await Promise.allSettled(proxySymbols.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
+      const availableProxies = proxyResults.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+      setData(Object.fromEntries([...coreResults, ...availableProxies]));
     } catch (caught) {
       setData({});
       setPendingOptimization(null);
@@ -289,7 +460,7 @@ function App() {
       return;
     }
     setPendingOptimization(objective);
-    void refresh();
+    if (!loading) void refresh();
   }
 
   useEffect(() => {
@@ -315,13 +486,16 @@ function App() {
   }
 
   function toggleSeries(name: string) {
-    setSelectedSeries(previous => previous.includes(name)
-      ? (previous.length > 2 ? previous.filter(value => value !== name) : previous)
-      : [...previous, name]);
+    setSelectedSeries(previous => {
+      const validPrevious = previous.filter(value => selectableSeries.includes(value));
+      return validPrevious.includes(name)
+        ? (validPrevious.length > 2 ? validPrevious.filter(value => value !== name) : validPrevious)
+        : [...validPrevious, name];
+    });
   }
 
   const chartSeries: ChartSeries[] = calculation
-    ? selectedSeries.flatMap(name => {
+    ? effectiveSelectedSeries.flatMap(name => {
         if (name === "Portfolio") return [{ name, returns: calculation.portfolioReturns, color: "#111111" }];
         const index = symbols.indexOf(name);
         return index >= 0 ? [{ name, returns: calculation.assetReturns[index], color: COLORS[index % COLORS.length] }] : [];
@@ -345,42 +519,28 @@ function App() {
 
     <section className="card allocation-card">
       <div className="section-title">
-        <div><span className="eyebrow">Allocation ledger</span><h2>Weights and analytical dimensions</h2></div>
+        <div><span className="eyebrow">Allocation ledger</span><h2>Portfolio weights</h2></div>
         <span className={Math.abs(allocationTotal - 100) < .01 ? "pill ok" : "pill warn"}>Allocation {allocationTotal.toFixed(1)}%</span>
       </div>
       <div className="holdings-scroll">
-        <div className="holding-head"><span>Symbol</span><span>Weight</span><span>Style</span><span>Sector</span><span>Primary factor</span><span></span></div>
+        <div className="holding-head"><span>Symbol</span><span>Weight</span><span></span></div>
         <div className="holdings">{holdings.map((holding, i) => <div className="holding" key={i}>
           <input aria-label={`Symbol ${i + 1}`} value={holding.symbol} onChange={event => updateHolding(i, "symbol", event.target.value)} placeholder="Ticker"/>
           <label className="weight-field"><span className="sr-only">Weight for {holding.symbol || `row ${i + 1}`}</span><input aria-label={`Weight ${holding.symbol}`} type="number" min="0" step="0.1" value={holding.weight} onChange={event => updateHolding(i, "weight", event.target.value)}/><i>%</i></label>
-          <select aria-label={`Style ${holding.symbol}`} value={holding.style} onChange={event => updateHolding(i, "style", event.target.value)}>{STYLE_OPTIONS.map(option => <option key={option}>{option}</option>)}</select>
-          <select aria-label={`Sector ${holding.symbol}`} value={holding.sector} onChange={event => updateHolding(i, "sector", event.target.value)}>{SECTOR_OPTIONS.map(option => <option key={option}>{option}</option>)}</select>
-          <select aria-label={`Primary factor ${holding.symbol}`} value={holding.factor} onChange={event => updateHolding(i, "factor", event.target.value)}>{FACTOR_OPTIONS.map(option => <option key={option}>{option}</option>)}</select>
           <button className="icon" aria-label={`Remove ${holding.symbol}`} onClick={() => setHoldings(previous => previous.filter((_, j) => j !== i))}>×</button>
         </div>)}</div>
       </div>
-      <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", weight: 0, style: "Blend", sector: "Diversified", factor: "Market" }])}>+ Add holding</button>
-      <p className="note">Weights are normalized to 100% for calculations. Style, sector, and factor are editable analytical tags; verify the classifications for your use case.</p>
+      <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", weight: 0 }])}>+ Add holding</button>
+      <p className="note">Weights are normalized to 100% for calculations. Style, sector, and factor are inferred automatically from each holding’s return relationship to representative ETFs.</p>
     </section>
 
     <section className="card optimizer-card">
       <div><span className="eyebrow">Portfolio design</span><h2>Constraint-aware optimizer</h2><p className="muted">Long-only; each holding capped at 60%. The optimizer loads market history automatically and can also start a refresh when data is not ready.</p></div>
       <div className="optimizer-actions">
-        <div className="action-row"><button className="secondary" disabled={loading || activeHoldings.length < 2} onClick={() => optimize("minvol")}>{pendingOptimization === "minvol" ? "Preparing..." : "Minimum volatility"}</button><button className="secondary" disabled={loading || activeHoldings.length < 2} onClick={() => optimize("maxsharpe")}>{pendingOptimization === "maxsharpe" ? "Preparing..." : "Maximum Sharpe"}</button></div>
+        <div className="action-row"><button className="secondary" disabled={activeHoldings.length < 2 || pendingOptimization !== null} onClick={() => optimize("minvol")}>{pendingOptimization === "minvol" ? "Preparing..." : "Minimum volatility"}</button><button className="secondary" disabled={activeHoldings.length < 2 || pendingOptimization !== null} onClick={() => optimize("maxsharpe")}>{pendingOptimization === "maxsharpe" ? "Preparing..." : "Maximum Sharpe"}</button></div>
         {optimized && <div className="recommend"><b>Suggested target allocation</b><div>{symbols.map((symbol, i) => <span key={symbol}>{symbol} <strong>{pct(optimized[i])}</strong></span>)}</div><button className="link" onClick={applyOptimized}>Apply as weights →</button></div>}
       </div>
       <p className="note">Optimization and rebalancing are scenario tools, not recommendations. Results are sensitive to the window, expected returns, constraints, taxes, and trading costs.</p>
-    </section>
-
-    <section className="card exposure-card">
-      <div className="section-title"><div><span className="eyebrow">Portfolio composition</span><h2>Style / sector / factor radar</h2></div><span className="pill">Shared 0-100% scale</span></div>
-      <p className="chart-intro">Three small multiples keep unlike dimensions separate while making concentration easy to compare. Each plot uses the normalized portfolio weights above.</p>
-      <div className="radar-grid">
-        <RadarPlot title="Style" data={styleExposure} color="#FF3B00"/>
-        <RadarPlot title="Sector" data={sectorExposure} color="#2E5CC8"/>
-        <RadarPlot title="Factor" data={factorExposure} color="#7B3FB5"/>
-      </div>
-      <p className="note">Each holding has one primary tag per dimension, so these are exposure summaries rather than a multi-factor regression. When more than six categories are present, smaller categories are combined as Other.</p>
     </section>
 
     {error && <section className="notice error"><b>Market data unavailable.</b> {error} Check the ticker and network access, then refresh. No statistics are shown from substituted or synthetic prices.</section>}
@@ -396,13 +556,52 @@ function App() {
         <Metric label="Beta vs. benchmark" value={num(calculation.portfolio.beta!)}/>
       </section>
 
+      <section className="card composition-card">
+        <div className="section-title">
+          <div><span className="eyebrow">Composition & counterweights</span><h2>Style / sector / factor radar</h2></div>
+          <span className="pill">Automatic classification</span>
+        </div>
+        <p className="chart-intro">The analysis assigns each holding to its closest style, sector/sleeve, and primary-factor proxy using realized daily-return correlation over the selected window. The radar plots share a 0-100% scale so concentration is directly comparable across dimensions.</p>
+        <div className="classification-table" role="table" aria-label="Automatically inferred holding classifications">
+          <div className="classification-row classification-header" role="row">
+            <span role="columnheader">Holding</span><span role="columnheader">Inferred style</span><span role="columnheader">Inferred sector / sleeve</span><span role="columnheader">Inferred factor</span><span role="columnheader">Confidence</span>
+          </div>
+          {calculation.classifications.map(item => {
+            const styleConfidence = classificationConfidence(item.style.correlation, item.style.runnerUpCorrelation);
+            const sectorConfidence = classificationConfidence(item.sector.correlation, item.sector.runnerUpCorrelation);
+            const factorConfidence = classificationConfidence(item.factor.correlation, item.factor.runnerUpCorrelation);
+            const confidence = [styleConfidence, sectorConfidence, factorConfidence].includes("Low")
+              ? "Low"
+              : [styleConfidence, sectorConfidence, factorConfidence].includes("Moderate") ? "Moderate" : "High";
+            return <div className="classification-row" role="row" key={item.symbol}>
+              <strong role="cell">{item.symbol}</strong>
+              <span role="cell"><b>{item.style.name}</b><small>ρ {num(item.style.correlation)}</small></span>
+              <span role="cell"><b>{item.sector.name}</b><small>ρ {num(item.sector.correlation)}</small></span>
+              <span role="cell"><b>{item.factor.name}</b><small>ρ {num(item.factor.correlation)}</small></span>
+              <span role="cell"><em className={`confidence ${confidence === "Low" ? "low" : ""}`}>{confidence}</em><small>lowest of three</small></span>
+            </div>;
+          })}
+        </div>
+        <div className="radar-grid">
+          <RadarPlot title="Style" data={radarDataFromView(calculation.styleView, STYLE_OPTIONS)} color="#FF3B00"/>
+          <RadarPlot title="Sector" data={radarDataFromView(calculation.sectorView, SECTOR_OPTIONS)} color="#2E5CC8"/>
+          <RadarPlot title="Factor" data={radarDataFromView(calculation.factorView, FACTOR_OPTIONS)} color="#7B3FB5"/>
+        </div>
+        <div className="balance-summary">
+          <div><span>Style additions</span><strong>{calculation.styleView.additions.length ? calculation.styleView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
+          <div><span>Sector / sleeve additions</span><strong>{calculation.sectorView.additions.length ? calculation.sectorView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
+          <div><span>Factor additions</span><strong>{calculation.factorView.additions.length ? calculation.factorView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
+        </div>
+        <p className="note">Classifications are best-fit historical inferences, not issuer classifications or factor-regression estimates; low-confidence labels may change with the analysis window. Addition scores combine low allocation exposure with low correlation to the portfolio. They are balance prompts—not target weights or trade recommendations. When more than six radar categories are present, smaller categories are combined as Other.</p>
+      </section>
+
       <section className="card performance-card" id="performance-overlay">
-        <div className="section-title"><div><span className="eyebrow">Relative path of wealth</span><h2>Multi-asset performance overlay</h2></div><span className="pill">{selectedSeries.length} series</span></div>
+        <div className="section-title"><div><span className="eyebrow">Relative path of wealth</span><h2>Multi-asset performance overlay</h2></div><span className="pill">{effectiveSelectedSeries.length} series</span></div>
         <p className="chart-intro">Compare at least two normalized paths to see when paired holdings diverged and converged. Click a pairing opportunity below to load it here.</p>
         <div className="overlay-controls">{["Portfolio", ...symbols].map((name, i) => {
-          const active = selectedSeries.includes(name);
+          const active = effectiveSelectedSeries.includes(name);
           const color = name === "Portfolio" ? "#111111" : COLORS[(i - 1) % COLORS.length];
-          return <label className={active ? "series-toggle active" : "series-toggle"} key={name}><input type="checkbox" checked={active} onChange={() => toggleSeries(name)} disabled={active && selectedSeries.length <= 2}/><i style={{ background: color }}/>{name}</label>;
+          return <label className={active ? "series-toggle active" : "series-toggle"} key={name}><input type="checkbox" checked={active} onChange={() => toggleSeries(name)} disabled={active && effectiveSelectedSeries.length <= 2}/><i style={{ background: color }}/>{name}</label>;
         })}</div>
         <CumulativeChart dates={calculation.aligned.dates} series={chartSeries}/>
       </section>

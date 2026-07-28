@@ -1,6 +1,6 @@
 # Portfolio Laboratory
 
-Portfolio Laboratory is an interactive portfolio-risk and allocation dashboard built around free historical market data. Users can edit holdings, weights, and classification tags; select a one-, three-, or five-year lookback; choose a benchmark and risk-free rate; and compare the portfolio with long-only optimization scenarios.
+Portfolio Laboratory is an interactive portfolio-risk and allocation dashboard built around free historical market data. Users can edit holdings and weights; select a one-, three-, or five-year lookback; choose a benchmark and risk-free rate; and compare the portfolio with long-only optimization scenarios.
 
 ## What it calculates
 
@@ -10,7 +10,7 @@ Portfolio Laboratory is an interactive portfolio-risk and allocation dashboard b
 - Maximum peak-to-trough drawdown
 - One-day historical value at risk and conditional value at risk at 95%
 - Holding and portfolio beta relative to the selected benchmark
-- Portfolio composition across editable style, sector, and primary-factor dimensions, shown as shared-scale radar small multiples
+- Portfolio composition across automatically inferred style, sector, and primary-factor dimensions, shown as shared-scale radar small multiples
 - Pairwise Pearson correlations of aligned daily log returns
 - A selectable growth-of-$1 overlay for two or more holdings
 - Ranked pair opportunities using correlation, spread volatility, and a clearly labeled relative-motion heuristic
@@ -37,7 +37,7 @@ Adjusted-close history may be delayed, corrected, incomplete, or unavailable for
 
 Historical covariance and average returns are unstable estimates. Optimization results are scenario outputs, not recommendations, and may change substantially with the lookback, benchmark, risk-free rate, asset set, or constraints.
 
-Style, sector, and factor classifications are user-editable tags, not classifications supplied by Yahoo Finance and not factor-regression estimates. Each holding contributes its full normalized weight to one primary category in each dimension.
+Style, sector, and factor classifications are best-fit historical inferences based on return correlation with representative free-data ETF proxies. They are not issuer classifications or factor-regression estimates, and low-confidence labels may change with the analysis window. Each holding contributes its full normalized weight to one primary category in each dimension.
 
 Rebalancing can add, reduce, or have no effect on return. Its outcome depends on future relative movement, mean reversion, thresholds, taxes, spreads, fees, and the behavior of trending assets. Correlations can change abruptly, especially during market stress.
 

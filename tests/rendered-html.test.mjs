@@ -34,11 +34,18 @@ test("client analysis includes pairing, overlays, radar dimensions, and automati
   assert.match(source, /Suggested rebalance buckets/);
   assert.match(source, /Style \/ sector \/ factor radar/);
   assert.match(source, /<RadarPlot title="Factor"/);
+  assert.match(source, /STYLE_PROXIES/);
+  assert.match(source, /SECTOR_PROXIES/);
+  assert.match(source, /FACTOR_PROXIES/);
+  assert.match(source, /inferCategory/);
+  assert.match(source, /Automatic classification/);
+  assert.match(source, /Style, sector, and factor are inferred automatically/);
+  assert.match(source, /underweight \* diversification/);
   assert.match(source, /Volatility harvesting is not guaranteed/);
   assert.match(source, /rebalancePotential: spreadVolatility \* \(1 - correlation\[a\]\[b\]\) \/ 2/);
   assert.match(source, /triggered: drift >= rebalanceBand \/ 100/);
   assert.match(source, /weight \* Math\.exp\(cumulativeReturn\)/);
-  assert.match(source, /disabled=\{loading \|\| activeHoldings\.length < 2\}/);
+  assert.match(source, /disabled=\{activeHoldings\.length < 2 \|\| pendingOptimization !== null\}/);
   assert.doesNotMatch(source, /holding\.current|Current weight|<th>Current<\/th>/);
 });
 
