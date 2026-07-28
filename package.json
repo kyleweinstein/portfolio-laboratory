@@ -5,6 +5,14 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "unrs-resolver",
+      "workerd"
+    ]
+  },
   "scripts": {
     "dev": "vite",
     "build": "vinext build",
