@@ -27,14 +27,19 @@ test("server renders the portfolio dashboard shell", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("client analysis includes pairing, overlays, and rebalance controls", async () => {
+test("client analysis includes pairing, overlays, radar dimensions, and automatic drift controls", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(source, /Multi-asset performance overlay/);
   assert.match(source, /Lowest-correlation opportunities/);
   assert.match(source, /Suggested rebalance buckets/);
+  assert.match(source, /Style \/ sector \/ factor radar/);
+  assert.match(source, /<RadarPlot title="Factor"/);
   assert.match(source, /Volatility harvesting is not guaranteed/);
   assert.match(source, /rebalancePotential: spreadVolatility \* \(1 - correlation\[a\]\[b\]\) \/ 2/);
   assert.match(source, /triggered: drift >= rebalanceBand \/ 100/);
+  assert.match(source, /weight \* Math\.exp\(cumulativeReturn\)/);
+  assert.match(source, /disabled=\{loading \|\| activeHoldings\.length < 2\}/);
+  assert.doesNotMatch(source, /holding\.current|Current weight|<th>Current<\/th>/);
 });
 
 test("market route rejects unsafe symbols before source access", async () => {
