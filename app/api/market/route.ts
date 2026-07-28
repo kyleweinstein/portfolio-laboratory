@@ -1,3 +1,15 @@
+type YahooChartPayload = {
+  chart?: {
+    result?: Array<{
+      timestamp?: number[];
+      indicators?: {
+        adjclose?: Array<{ adjclose?: Array<number | null> }>;
+        quote?: Array<{ close?: Array<number | null> }>;
+      };
+    }>;
+  };
+};
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const symbol = (url.searchParams.get("symbol") || "").trim().toUpperCase();
@@ -25,7 +37,7 @@ export async function GET(request: Request) {
     if (!response.ok) {
       return Response.json({ error: `${symbol}: source returned ${response.status}` }, { status: 502 });
     }
-    const json = await response.json() as any;
+    const json = await response.json() as YahooChartPayload;
     const result = json?.chart?.result?.[0];
     const stamps: number[] = result?.timestamp || [];
     const adjusted: Array<number | null> =

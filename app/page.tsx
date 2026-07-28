@@ -1,21 +1,67 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
-type Holding = { symbol: string; target: number; current: number };
+const STYLE_OPTIONS = [
+  "Large Growth", "Large Blend", "Large Value", "Mid Cap", "Small Cap",
+  "International Developed", "Emerging Markets", "Fixed Income", "Real Assets",
+] as const;
+const SECTOR_OPTIONS = [
+  "Technology", "Communication Services", "Consumer Discretionary", "Consumer Staples",
+  "Energy", "Financials", "Health Care", "Industrials", "Materials", "Real Estate",
+  "Utilities", "Diversified Equity", "Fixed Income", "Commodities",
+] as const;
+type StyleName = typeof STYLE_OPTIONS[number];
+type SectorName = typeof SECTOR_OPTIONS[number];
+type Holding = { symbol: string; target: number; current: number; style: StyleName; sector: SectorName };
 type Series = { dates: string[]; prices: number[] };
 type Stat = { annualReturn: number; volatility: number; sharpe: number; maxDrawdown: number; var95: number; cvar95: number; beta?: number };
 type PairInsight = { a: number; b: number; correlation: number; spreadVolatility: number; rebalancePotential: number };
 type ChartSeries = { name: string; returns: number[]; color: string };
+type CategoryRow = { name: string; exposure: number; suggestions: { name: string; correlation: number }[] };
+type CategoryView = {
+  rows: CategoryRow[];
+  additions: { name: string; exposure: number; correlation: number; score: number }[];
+  covered: number;
+  total: number;
+};
 
 const DEFAULT_HOLDINGS: Holding[] = [
-  { symbol: "SPY", target: 35, current: 35 },
-  { symbol: "QQQ", target: 25, current: 25 },
-  { symbol: "IEF", target: 20, current: 20 },
-  { symbol: "GLD", target: 10, current: 10 },
-  { symbol: "VNQ", target: 10, current: 10 },
+  { symbol: "SPY", target: 35, current: 35, style: "Large Blend", sector: "Diversified Equity" },
+  { symbol: "QQQ", target: 25, current: 25, style: "Large Growth", sector: "Technology" },
+  { symbol: "IEF", target: 20, current: 20, style: "Fixed Income", sector: "Fixed Income" },
+  { symbol: "GLD", target: 10, current: 10, style: "Real Assets", sector: "Commodities" },
+  { symbol: "VNQ", target: 10, current: 10, style: "Real Assets", sector: "Real Estate" },
 ];
 const COLORS = ["#FF3B00", "#2E5CC8", "#1B6B45", "#7B3FB5", "#9A6A00", "#111111"];
+const STYLE_PROXIES: Record<StyleName, string> = {
+  "Large Growth": "VUG",
+  "Large Blend": "SPY",
+  "Large Value": "VTV",
+  "Mid Cap": "VO",
+  "Small Cap": "VB",
+  "International Developed": "VEA",
+  "Emerging Markets": "VWO",
+  "Fixed Income": "IEF",
+  "Real Assets": "GLD",
+};
+const SECTOR_PROXIES: Record<SectorName, string> = {
+  "Technology": "XLK",
+  "Communication Services": "XLC",
+  "Consumer Discretionary": "XLY",
+  "Consumer Staples": "XLP",
+  "Energy": "XLE",
+  "Financials": "XLF",
+  "Health Care": "XLV",
+  "Industrials": "XLI",
+  "Materials": "XLB",
+  "Real Estate": "XLRE",
+  "Utilities": "XLU",
+  "Diversified Equity": "SPY",
+  "Fixed Income": "IEF",
+  "Commodities": "GLD",
+};
+const ALL_PROXY_SYMBOLS = [...new Set([...Object.values(STYLE_PROXIES), ...Object.values(SECTOR_PROXIES)])];
 
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 const sampleStd = (xs: number[]) => Math.sqrt(xs.reduce((a, x) => a + (x - mean(xs)) ** 2, 0) / Math.max(1, xs.length - 1));
@@ -28,6 +74,18 @@ const normalizeWeights = (values: number[]) => {
   const total = clean.reduce((a, b) => a + b, 0);
   return total > 0 ? clean.map(value => value / total) : clean.map(() => 1 / Math.max(clean.length, 1));
 };
+
+function correlationFromSeries(a?: Series, b?: Series) {
+  if (!a || !b) return NaN;
+  const left = new Map(a.dates.map((date, i) => [date, a.prices[i]]));
+  const right = new Map(b.dates.map((date, i) => [date, b.prices[i]]));
+  const dates = [...left.keys()].filter(date => right.has(date)).sort();
+  if (dates.length < 60) return NaN;
+  const aReturns = dates.slice(1).map((date, i) => Math.log((left.get(date) as number) / (left.get(dates[i]) as number)));
+  const bReturns = dates.slice(1).map((date, i) => Math.log((right.get(date) as number) / (right.get(dates[i]) as number)));
+  const denominator = sampleStd(aReturns) * sampleStd(bReturns);
+  return denominator ? covariance(aReturns, bReturns) / denominator : NaN;
+}
 
 function fetchSeries(symbol: string, years: number): Promise<Series> {
   const url = `/api/market?symbol=${encodeURIComponent(symbol)}&years=${years}`;
@@ -103,21 +161,17 @@ function App() {
   const [optimized, setOptimized] = useState<number[] | null>(null);
   const [selectedSeries, setSelectedSeries] = useState<string[]>(["Portfolio", "SPY", "QQQ"]);
 
-  const activeHoldings = holdings
+  const activeHoldings = useMemo(() => holdings
     .map((holding, rowIndex) => ({ ...holding, rowIndex, symbol: holding.symbol.trim().toUpperCase() }))
-    .filter(holding => Boolean(holding.symbol));
-  const symbols = activeHoldings.map(holding => holding.symbol);
+    .filter(holding => Boolean(holding.symbol)), [holdings]);
+  const symbols = useMemo(() => activeHoldings.map(holding => holding.symbol), [activeHoldings]);
   const targetTotal = activeHoldings.reduce((sum, holding) => sum + (Number(holding.target) || 0), 0);
   const currentTotal = activeHoldings.reduce((sum, holding) => sum + (Number(holding.current) || 0), 0);
-
-  useEffect(() => {
-    const valid = new Set(["Portfolio", ...symbols]);
-    setSelectedSeries(previous => {
-      const kept = previous.filter(name => valid.has(name));
-      if (kept.length >= 2) return kept;
-      return ["Portfolio", ...symbols.slice(0, 2)].slice(0, Math.min(3, symbols.length + 1));
-    });
-  }, [symbols.join("|")]);
+  const selectableSeries = ["Portfolio", ...symbols];
+  const keptSeries = selectedSeries.filter(name => selectableSeries.includes(name));
+  const effectiveSelectedSeries = keptSeries.length >= 2
+    ? keptSeries
+    : selectableSeries.slice(0, Math.min(3, selectableSeries.length));
 
   const calculation = useMemo(() => {
     if (!symbols.length || !symbols.every(symbol => data[symbol]) || !data[benchmark]) return null;
@@ -187,6 +241,62 @@ function App() {
       };
     });
 
+    const portfolioCorrelation = (proxy: Series) => {
+      const proxyReturns = new Map(proxy.dates.slice(1).map((date, i) => [date, Math.log(proxy.prices[i + 1] / proxy.prices[i])]));
+      const paired = aligned.dates
+        .map((date, i) => [portfolioReturns[i], proxyReturns.get(date)] as const)
+        .filter((pair): pair is readonly [number, number] => Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
+      if (paired.length < 60) return NaN;
+      const left = paired.map(pair => pair[0]);
+      const right = paired.map(pair => pair[1]);
+      const denominator = sampleStd(left) * sampleStd(right);
+      return denominator ? covariance(left, right) / denominator : NaN;
+    };
+
+    const buildCategoryView = <T extends string>(
+      options: readonly T[],
+      proxies: Record<T, string>,
+      field: "style" | "sector",
+    ): CategoryView => {
+      const exposures = new Map<T, number>(options.map(option => [option, 0]));
+      activeHoldings.forEach((holding, index) => {
+        const category = holding[field] as T;
+        exposures.set(category, (exposures.get(category) || 0) + currentWeights[index]);
+      });
+      const available = options.filter(option => data[proxies[option]]);
+      const pairCorrelation = (left: T, right: T) =>
+        correlationFromSeries(data[proxies[left]], data[proxies[right]]);
+      const rows = options
+        .filter(option => (exposures.get(option) || 0) > .0005)
+        .map(option => ({
+          name: option,
+          exposure: exposures.get(option) || 0,
+          suggestions: available
+            .filter(candidate => candidate !== option)
+            .map(candidate => ({ name: candidate, correlation: pairCorrelation(option, candidate) }))
+            .filter(candidate => Number.isFinite(candidate.correlation))
+            .sort((a, b) => a.correlation - b.correlation)
+            .slice(0, 3),
+        }))
+        .sort((a, b) => b.exposure - a.exposure);
+      const neutralWeight = 1 / Math.max(available.length, 1);
+      const additions = available
+        .map(option => {
+          const exposure = exposures.get(option) || 0;
+          const correlation = portfolioCorrelation(data[proxies[option]]);
+          const underweight = Math.max(0, neutralWeight - exposure) / neutralWeight;
+          const diversification = Number.isFinite(correlation) ? (1 - correlation) / 2 : 0;
+          return { name: option, exposure, correlation, score: underweight * diversification };
+        })
+        .filter(option => option.exposure < neutralWeight * .8 && Number.isFinite(option.correlation))
+        .sort((a, b) => b.score - a.score || a.correlation - b.correlation)
+        .slice(0, 3);
+      return { rows, additions, covered: available.length, total: options.length };
+    };
+
+    const styleView = buildCategoryView(STYLE_OPTIONS, STYLE_PROXIES, "style");
+    const sectorView = buildCategoryView(SECTOR_OPTIONS, SECTOR_PROXIES, "sector");
+
     return {
       aligned,
       assetReturns,
@@ -199,8 +309,10 @@ function App() {
       correlation,
       pairs,
       buckets,
+      styleView,
+      sectorView,
     };
-  }, [data, symbols.join("|"), holdings, benchmark, riskFreeRate, rebalanceBand]);
+  }, [data, activeHoldings, symbols, benchmark, riskFreeRate, rebalanceBand]);
 
   async function refresh() {
     setLoading(true);
@@ -208,9 +320,12 @@ function App() {
     setOptimized(null);
     try {
       if (new Set(symbols).size !== symbols.length) throw new Error("Each holding symbol must be unique.");
-      const unique = [...new Set([...symbols, benchmark.toUpperCase()])];
-      const results = await Promise.all(unique.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
-      setData(Object.fromEntries(results));
+      const coreSymbols = [...new Set([...symbols, benchmark.toUpperCase()])];
+      const coreResults = await Promise.all(coreSymbols.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
+      const proxySymbols = ALL_PROXY_SYMBOLS.filter(symbol => !coreSymbols.includes(symbol));
+      const proxyResults = await Promise.allSettled(proxySymbols.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
+      const availableProxies = proxyResults.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+      setData(Object.fromEntries([...coreResults, ...availableProxies]));
     } catch (caught) {
       setData({});
       setError(caught instanceof Error ? caught.message : "Unable to retrieve price history.");
@@ -221,7 +336,7 @@ function App() {
 
   function updateHolding(index: number, field: keyof Holding, value: string) {
     setHoldings(previous => previous.map((holding, i) => i === index
-      ? { ...holding, [field]: field === "symbol" ? value.toUpperCase() : Number(value) }
+      ? { ...holding, [field]: field === "target" || field === "current" ? Number(value) : field === "symbol" ? value.toUpperCase() : value }
       : holding));
   }
 
@@ -264,13 +379,16 @@ function App() {
   }
 
   function toggleSeries(name: string) {
-    setSelectedSeries(previous => previous.includes(name)
-      ? (previous.length > 2 ? previous.filter(value => value !== name) : previous)
-      : [...previous, name]);
+    setSelectedSeries(previous => {
+      const validPrevious = previous.filter(value => selectableSeries.includes(value));
+      return validPrevious.includes(name)
+        ? (validPrevious.length > 2 ? validPrevious.filter(value => value !== name) : validPrevious)
+        : [...validPrevious, name];
+    });
   }
 
   const chartSeries: ChartSeries[] = calculation
-    ? selectedSeries.flatMap(name => {
+    ? effectiveSelectedSeries.flatMap(name => {
         if (name === "Portfolio") return [{ name, returns: calculation.portfolioReturns, color: "#111111" }];
         const index = symbols.indexOf(name);
         return index >= 0 ? [{ name, returns: calculation.assetReturns[index], color: COLORS[index % COLORS.length] }] : [];
@@ -298,14 +416,20 @@ function App() {
           <div className="allocation-totals"><span className={Math.abs(targetTotal - 100) < .01 ? "pill ok" : "pill warn"}>Target {targetTotal.toFixed(1)}%</span><span className={Math.abs(currentTotal - 100) < .01 ? "pill ok" : "pill warn"}>Current {currentTotal.toFixed(1)}%</span></div>
         </div>
         <div className="holding-head"><span>Symbol</span><span>Target</span><span></span><span>Current</span><span></span><span></span></div>
-        <div className="holdings">{holdings.map((holding, i) => <div className="holding" key={i}>
-          <input aria-label={`Symbol ${i + 1}`} value={holding.symbol} onChange={event => updateHolding(i, "symbol", event.target.value)} placeholder="Ticker"/>
-          <input aria-label={`Target weight ${holding.symbol}`} type="number" min="0" step="0.1" value={holding.target} onChange={event => updateHolding(i, "target", event.target.value)}/><span>%</span>
-          <input aria-label={`Current weight ${holding.symbol}`} type="number" min="0" step="0.1" value={holding.current} onChange={event => updateHolding(i, "current", event.target.value)}/><span>%</span>
-          <button className="icon" aria-label={`Remove ${holding.symbol}`} onClick={() => setHoldings(previous => previous.filter((_, j) => j !== i))}>×</button>
+        <div className="holdings">{holdings.map((holding, i) => <div className="holding-block" key={i}>
+          <div className="holding">
+            <input aria-label={`Symbol ${i + 1}`} value={holding.symbol} onChange={event => updateHolding(i, "symbol", event.target.value)} placeholder="Ticker"/>
+            <input aria-label={`Target weight ${holding.symbol}`} type="number" min="0" step="0.1" value={holding.target} onChange={event => updateHolding(i, "target", event.target.value)}/><span>%</span>
+            <input aria-label={`Current weight ${holding.symbol}`} type="number" min="0" step="0.1" value={holding.current} onChange={event => updateHolding(i, "current", event.target.value)}/><span>%</span>
+            <button className="icon" aria-label={`Remove ${holding.symbol}`} onClick={() => setHoldings(previous => previous.filter((_, j) => j !== i))}>×</button>
+          </div>
+          <div className="classification-fields">
+            <label>Style<select aria-label={`Style for ${holding.symbol || `holding ${i + 1}`}`} value={holding.style} onChange={event => updateHolding(i, "style", event.target.value)}>{STYLE_OPTIONS.map(option => <option key={option}>{option}</option>)}</select></label>
+            <label>Sector / sleeve<select aria-label={`Sector for ${holding.symbol || `holding ${i + 1}`}`} value={holding.sector} onChange={event => updateHolding(i, "sector", event.target.value)}>{SECTOR_OPTIONS.map(option => <option key={option}>{option}</option>)}</select></label>
+          </div>
         </div>)}</div>
-        <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", target: 0, current: 0 }])}>+ Add holding</button>
-        <p className="note">Both columns are normalized for calculations when their displayed totals differ from 100%.</p>
+        <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", target: 0, current: 0, style: "Large Blend", sector: "Diversified Equity" }])}>+ Add holding</button>
+        <p className="note">Both columns are normalized for calculations when their displayed totals differ from 100%. Confirm each holding’s style and sector/sleeve classification before refreshing.</p>
       </div>
       <div className="card">
         <span className="eyebrow">Portfolio design</span><h2>Constraint-aware optimizer</h2>
@@ -329,13 +453,30 @@ function App() {
         <Metric label="Beta vs. benchmark" value={num(calculation.portfolio.beta!)}/>
       </section>
 
+      <section className="card composition-card">
+        <div className="section-title">
+          <div><span className="eyebrow">Composition & counterweights</span><h2>Style and sector balance</h2></div>
+          <span className="pill">Historical proxy analysis</span>
+        </div>
+        <p className="chart-intro">Current weights are grouped using the classifications in the allocation ledger. Counterweights are ranked by realized correlation between representative ETFs over the selected window; a negative value is anticorrelation, while a positive value is only lower correlation.</p>
+        <div className="balance-summary">
+          <div><span>Style additions</span><strong>{calculation.styleView.additions.length ? calculation.styleView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
+          <div><span>Sector / sleeve additions</span><strong>{calculation.sectorView.additions.length ? calculation.sectorView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
+        </div>
+        <div className="composition-grid">
+          <CategoryAnalysis title="Portfolio by style" view={calculation.styleView}/>
+          <CategoryAnalysis title="Portfolio by sector / sleeve" view={calculation.sectorView}/>
+        </div>
+        <p className="note">Addition scores combine low current exposure with low correlation to the current portfolio. They are balance prompts—not target weights or trade recommendations. Sector ETFs are imperfect proxies, correlations are backward-looking, and “sector / sleeve” includes bonds and commodities so the full portfolio reconciles to 100%.</p>
+      </section>
+
       <section className="card performance-card" id="performance-overlay">
-        <div className="section-title"><div><span className="eyebrow">Relative path of wealth</span><h2>Multi-asset performance overlay</h2></div><span className="pill">{selectedSeries.length} series</span></div>
+        <div className="section-title"><div><span className="eyebrow">Relative path of wealth</span><h2>Multi-asset performance overlay</h2></div><span className="pill">{effectiveSelectedSeries.length} series</span></div>
         <p className="chart-intro">Compare at least two normalized paths to see when paired holdings diverged and converged. Click a pairing opportunity below to load it here.</p>
         <div className="overlay-controls">{["Portfolio", ...symbols].map((name, i) => {
-          const active = selectedSeries.includes(name);
+          const active = effectiveSelectedSeries.includes(name);
           const color = name === "Portfolio" ? "#111111" : COLORS[(i - 1) % COLORS.length];
-          return <label className={active ? "series-toggle active" : "series-toggle"} key={name}><input type="checkbox" checked={active} onChange={() => toggleSeries(name)} disabled={active && selectedSeries.length <= 2}/><i style={{ background: color }}/>{name}</label>;
+          return <label className={active ? "series-toggle active" : "series-toggle"} key={name}><input type="checkbox" checked={active} onChange={() => toggleSeries(name)} disabled={active && effectiveSelectedSeries.length <= 2}/><i style={{ background: color }}/>{name}</label>;
         })}</div>
         <CumulativeChart dates={calculation.aligned.dates} series={chartSeries}/>
       </section>
@@ -396,6 +537,24 @@ function App() {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div className="metric card"><span>{label}</span><strong>{value}</strong><small>Current window</small></div>;
+}
+
+function CategoryAnalysis({ title, view }: { title: string; view: CategoryView }) {
+  return <div className="category-panel">
+    <div className="category-heading"><h3>{title}</h3><span>{view.covered}/{view.total} proxies loaded</span></div>
+    <div className="exposure-list">{view.rows.map(row => <article className="exposure-row" key={row.name}>
+      <div className="exposure-label"><b>{row.name}</b><strong>{pct(row.exposure)}</strong></div>
+      <div className="exposure-track" aria-label={`${row.name}: ${pct(row.exposure)}`}><i style={{ width: `${Math.min(100, row.exposure * 100)}%` }}/></div>
+      <div className="counterweights"><span>Lowest-correlation counterweights</span>
+        <div>{row.suggestions.map(suggestion => <span className={suggestion.correlation < 0 ? "counterweight negative" : "counterweight"} key={suggestion.name}>
+          {suggestion.name} <b>{num(suggestion.correlation)}</b> <em>{suggestion.correlation < 0 ? "anti" : "low"}</em>
+        </span>)}</div>
+      </div>
+    </article>)}</div>
+    <div className="addition-list"><span>Best balance candidates</span>{view.additions.map(addition => <div key={addition.name}>
+      <b>{addition.name}</b><span>Current {pct(addition.exposure)}</span><span>Corr. to portfolio {num(addition.correlation)}</span>
+    </div>)}</div>
+  </div>;
 }
 
 function CumulativeChart({ dates, series }: { dates: string[]; series: ChartSeries[] }) {

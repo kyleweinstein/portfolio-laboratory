@@ -32,6 +32,11 @@ test("client analysis includes pairing, overlays, and rebalance controls", async
   assert.match(source, /Multi-asset performance overlay/);
   assert.match(source, /Lowest-correlation opportunities/);
   assert.match(source, /Suggested rebalance buckets/);
+  assert.match(source, /Style and sector balance/);
+  assert.match(source, /Lowest-correlation counterweights/);
+  assert.match(source, /STYLE_PROXIES/);
+  assert.match(source, /SECTOR_PROXIES/);
+  assert.match(source, /underweight \* diversification/);
   assert.match(source, /Volatility harvesting is not guaranteed/);
   assert.match(source, /rebalancePotential: spreadVolatility \* \(1 - correlation\[a\]\[b\]\) \/ 2/);
   assert.match(source, /triggered: drift >= rebalanceBand \/ 100/);
