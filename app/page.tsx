@@ -13,12 +13,23 @@ const SECTOR_OPTIONS = [
 ] as const;
 type StyleName = typeof STYLE_OPTIONS[number];
 type SectorName = typeof SECTOR_OPTIONS[number];
-type Holding = { symbol: string; target: number; current: number; style: StyleName; sector: SectorName };
+type Holding = { symbol: string; target: number; current: number };
 type Series = { dates: string[]; prices: number[] };
 type Stat = { annualReturn: number; volatility: number; sharpe: number; maxDrawdown: number; var95: number; cvar95: number; beta?: number };
 type PairInsight = { a: number; b: number; correlation: number; spreadVolatility: number; rebalancePotential: number };
 type ChartSeries = { name: string; returns: number[]; color: string };
 type CategoryRow = { name: string; exposure: number; suggestions: { name: string; correlation: number }[] };
+type Classification<T extends string> = {
+  name: T;
+  correlation: number;
+  runnerUp: T | null;
+  runnerUpCorrelation: number;
+};
+type HoldingClassification = {
+  symbol: string;
+  style: Classification<StyleName>;
+  sector: Classification<SectorName>;
+};
 type CategoryView = {
   rows: CategoryRow[];
   additions: { name: string; exposure: number; correlation: number; score: number }[];
@@ -27,11 +38,11 @@ type CategoryView = {
 };
 
 const DEFAULT_HOLDINGS: Holding[] = [
-  { symbol: "SPY", target: 35, current: 35, style: "Large Blend", sector: "Diversified Equity" },
-  { symbol: "QQQ", target: 25, current: 25, style: "Large Growth", sector: "Technology" },
-  { symbol: "IEF", target: 20, current: 20, style: "Fixed Income", sector: "Fixed Income" },
-  { symbol: "GLD", target: 10, current: 10, style: "Real Assets", sector: "Commodities" },
-  { symbol: "VNQ", target: 10, current: 10, style: "Real Assets", sector: "Real Estate" },
+  { symbol: "SPY", target: 35, current: 35 },
+  { symbol: "QQQ", target: 25, current: 25 },
+  { symbol: "IEF", target: 20, current: 20 },
+  { symbol: "GLD", target: 10, current: 10 },
+  { symbol: "VNQ", target: 10, current: 10 },
 ];
 const COLORS = ["#FF3B00", "#2E5CC8", "#1B6B45", "#7B3FB5", "#9A6A00", "#111111"];
 const STYLE_PROXIES: Record<StyleName, string> = {
@@ -90,10 +101,10 @@ function correlationFromSeries(a?: Series, b?: Series) {
 function fetchSeries(symbol: string, years: number): Promise<Series> {
   const url = `/api/market?symbol=${encodeURIComponent(symbol)}&years=${years}`;
   return fetch(url).then(async (res) => {
-    const json = await res.json().catch(() => ({}));
+    const json = await res.json().catch(() => ({})) as { error?: string; dates?: string[]; prices?: number[] };
     if (!res.ok) throw new Error(json?.error || `${symbol}: data request failed (${res.status})`);
     const pairs = (json?.dates || []).map((date: string, i: number) => [date, json?.prices?.[i]] as const)
-      .filter((pair: readonly [string, number]) => Number.isFinite(pair[1]) && pair[1] > 0);
+      .filter((pair): pair is readonly [string, number] => Number.isFinite(pair[1]) && (pair[1] ?? 0) > 0);
     if (pairs.length < 60) throw new Error(`${symbol}: insufficient price history`);
     return { dates: pairs.map(pair => pair[0]), prices: pairs.map(pair => pair[1]) };
   });
@@ -147,6 +158,13 @@ function classifyCorrelation(correlation: number) {
   if (correlation < .25) return "Low correlation";
   if (correlation < .55) return "Moderate overlap";
   return "High overlap";
+}
+
+function classificationConfidence(primary: number, runnerUp: number) {
+  const gap = primary - runnerUp;
+  if (primary >= .8 && gap >= .08) return "High";
+  if (primary >= .6 && gap >= .03) return "Moderate";
+  return "Low";
 }
 
 function App() {
@@ -253,14 +271,39 @@ function App() {
       return denominator ? covariance(left, right) / denominator : NaN;
     };
 
+    const inferCategory = <T extends string>(
+      asset: Series,
+      options: readonly T[],
+      proxies: Record<T, string>,
+    ): Classification<T> => {
+      const ranked = options
+        .map(name => ({ name, correlation: correlationFromSeries(asset, data[proxies[name]]) }))
+        .filter(item => Number.isFinite(item.correlation))
+        .sort((a, b) => b.correlation - a.correlation);
+      const best = ranked[0] || { name: options[0], correlation: NaN };
+      const runnerUp = ranked[1] || null;
+      return {
+        name: best.name,
+        correlation: best.correlation,
+        runnerUp: runnerUp?.name || null,
+        runnerUpCorrelation: runnerUp?.correlation ?? NaN,
+      };
+    };
+
+    const classifications: HoldingClassification[] = activeHoldings.map(holding => ({
+      symbol: holding.symbol,
+      style: inferCategory(data[holding.symbol], STYLE_OPTIONS, STYLE_PROXIES),
+      sector: inferCategory(data[holding.symbol], SECTOR_OPTIONS, SECTOR_PROXIES),
+    }));
+
     const buildCategoryView = <T extends string>(
       options: readonly T[],
       proxies: Record<T, string>,
       field: "style" | "sector",
     ): CategoryView => {
       const exposures = new Map<T, number>(options.map(option => [option, 0]));
-      activeHoldings.forEach((holding, index) => {
-        const category = holding[field] as T;
+      classifications.forEach((classification, index) => {
+        const category = classification[field].name as T;
         exposures.set(category, (exposures.get(category) || 0) + currentWeights[index]);
       });
       const available = options.filter(option => data[proxies[option]]);
@@ -309,6 +352,7 @@ function App() {
       correlation,
       pairs,
       buckets,
+      classifications,
       styleView,
       sectorView,
     };
@@ -336,7 +380,7 @@ function App() {
 
   function updateHolding(index: number, field: keyof Holding, value: string) {
     setHoldings(previous => previous.map((holding, i) => i === index
-      ? { ...holding, [field]: field === "target" || field === "current" ? Number(value) : field === "symbol" ? value.toUpperCase() : value }
+      ? { ...holding, [field]: field === "target" || field === "current" ? Number(value) : value.toUpperCase() }
       : holding));
   }
 
@@ -423,13 +467,9 @@ function App() {
             <input aria-label={`Current weight ${holding.symbol}`} type="number" min="0" step="0.1" value={holding.current} onChange={event => updateHolding(i, "current", event.target.value)}/><span>%</span>
             <button className="icon" aria-label={`Remove ${holding.symbol}`} onClick={() => setHoldings(previous => previous.filter((_, j) => j !== i))}>×</button>
           </div>
-          <div className="classification-fields">
-            <label>Style<select aria-label={`Style for ${holding.symbol || `holding ${i + 1}`}`} value={holding.style} onChange={event => updateHolding(i, "style", event.target.value)}>{STYLE_OPTIONS.map(option => <option key={option}>{option}</option>)}</select></label>
-            <label>Sector / sleeve<select aria-label={`Sector for ${holding.symbol || `holding ${i + 1}`}`} value={holding.sector} onChange={event => updateHolding(i, "sector", event.target.value)}>{SECTOR_OPTIONS.map(option => <option key={option}>{option}</option>)}</select></label>
-          </div>
         </div>)}</div>
-        <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", target: 0, current: 0, style: "Large Blend", sector: "Diversified Equity" }])}>+ Add holding</button>
-        <p className="note">Both columns are normalized for calculations when their displayed totals differ from 100%. Confirm each holding’s style and sector/sleeve classification before refreshing.</p>
+        <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", target: 0, current: 0 }])}>+ Add holding</button>
+        <p className="note">Both columns are normalized for calculations when their displayed totals differ from 100%. Style and sector are inferred automatically during analysis from each holding’s return relationship to representative ETFs.</p>
       </div>
       <div className="card">
         <span className="eyebrow">Portfolio design</span><h2>Constraint-aware optimizer</h2>
@@ -456,9 +496,24 @@ function App() {
       <section className="card composition-card">
         <div className="section-title">
           <div><span className="eyebrow">Composition & counterweights</span><h2>Style and sector balance</h2></div>
-          <span className="pill">Historical proxy analysis</span>
+          <span className="pill">Automatic classification</span>
         </div>
-        <p className="chart-intro">Current weights are grouped using the classifications in the allocation ledger. Counterweights are ranked by realized correlation between representative ETFs over the selected window; a negative value is anticorrelation, while a positive value is only lower correlation.</p>
+        <p className="chart-intro">The analysis assigns each holding to its closest style and sector/sleeve proxy using realized daily-return correlation over the selected window. Counterweights are then ranked from the same proxy set; a negative value is anticorrelation, while a positive value is only lower correlation.</p>
+        <div className="classification-table" role="table" aria-label="Automatically inferred holding classifications">
+          <div className="classification-row classification-header" role="row">
+            <span role="columnheader">Holding</span><span role="columnheader">Inferred style</span><span role="columnheader">Inferred sector / sleeve</span><span role="columnheader">Confidence</span>
+          </div>
+          {calculation.classifications.map(item => {
+            const styleConfidence = classificationConfidence(item.style.correlation, item.style.runnerUpCorrelation);
+            const sectorConfidence = classificationConfidence(item.sector.correlation, item.sector.runnerUpCorrelation);
+            return <div className="classification-row" role="row" key={item.symbol}>
+              <strong role="cell">{item.symbol}</strong>
+              <span role="cell"><b>{item.style.name}</b><small>ρ {num(item.style.correlation)}</small></span>
+              <span role="cell"><b>{item.sector.name}</b><small>ρ {num(item.sector.correlation)}</small></span>
+              <span role="cell"><em className={`confidence ${styleConfidence === "Low" || sectorConfidence === "Low" ? "low" : ""}`}>{styleConfidence === sectorConfidence ? styleConfidence : `${styleConfidence} / ${sectorConfidence}`}</em><small>style / sector</small></span>
+            </div>;
+          })}
+        </div>
         <div className="balance-summary">
           <div><span>Style additions</span><strong>{calculation.styleView.additions.length ? calculation.styleView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
           <div><span>Sector / sleeve additions</span><strong>{calculation.sectorView.additions.length ? calculation.sectorView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div>
@@ -467,7 +522,7 @@ function App() {
           <CategoryAnalysis title="Portfolio by style" view={calculation.styleView}/>
           <CategoryAnalysis title="Portfolio by sector / sleeve" view={calculation.sectorView}/>
         </div>
-        <p className="note">Addition scores combine low current exposure with low correlation to the current portfolio. They are balance prompts—not target weights or trade recommendations. Sector ETFs are imperfect proxies, correlations are backward-looking, and “sector / sleeve” includes bonds and commodities so the full portfolio reconciles to 100%.</p>
+        <p className="note">Classifications are best-fit historical inferences, not issuer classifications; low-confidence labels may change with the analysis window. Addition scores combine low current exposure with low correlation to the current portfolio. They are balance prompts—not target weights or trade recommendations. “Sector / sleeve” includes bonds and commodities so the full portfolio reconciles to 100%.</p>
       </section>
 
       <section className="card performance-card" id="performance-overlay">

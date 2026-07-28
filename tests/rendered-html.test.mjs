@@ -36,6 +36,11 @@ test("client analysis includes pairing, overlays, and rebalance controls", async
   assert.match(source, /Lowest-correlation counterweights/);
   assert.match(source, /STYLE_PROXIES/);
   assert.match(source, /SECTOR_PROXIES/);
+  assert.match(source, /inferCategory/);
+  assert.match(source, /Automatic classification/);
+  assert.match(source, /Style and sector are inferred automatically during analysis/);
+  assert.doesNotMatch(source, /classification-fields/);
+  assert.doesNotMatch(source, /Confirm each holding’s style and sector/);
   assert.match(source, /underweight \* diversification/);
   assert.match(source, /Volatility harvesting is not guaranteed/);
   assert.match(source, /rebalancePotential: spreadVolatility \* \(1 - correlation\[a\]\[b\]\) \/ 2/);
