@@ -2,6 +2,8 @@
 
 Portfolio Laboratory is an interactive portfolio-risk and allocation dashboard built around free historical market data. Users can edit holdings and weights; select a one-, three-, or five-year lookback; choose a benchmark and risk-free rate; and compare the portfolio with long-only optimization scenarios.
 
+Portfolio CSVs can be imported directly in the browser. The importer accepts `Symbol` plus either `Value` or `Weight`, merges duplicate symbols, converts position values into normalized portfolio weights, and reports malformed rows without replacing the existing portfolio. The CSV file itself is not uploaded or retained; imported ticker symbols are sent through the dashboard’s market-data route when analysis refreshes.
+
 ## What it calculates
 
 - Portfolio and holding annualized return from average daily log return

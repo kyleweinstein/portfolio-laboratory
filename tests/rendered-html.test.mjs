@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parsePortfolioCsv } from "../app/portfolio-csv.ts";
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -50,6 +51,37 @@ test("client analysis includes pairing, equal-scale direction lanes, radar dimen
   assert.match(source, /weight \* Math\.exp\(cumulativeReturn\)/);
   assert.match(source, /disabled=\{activeHoldings\.length < 2 \|\| pendingOptimization !== null\}/);
   assert.doesNotMatch(source, /holding\.current|Current weight|<th>Current<\/th>/);
+});
+
+test("portfolio CSV import derives weights from Value and merges duplicate symbols", () => {
+  const csv = [
+    "Symbol,Name,Quantity,Avg. Price,Cost Basis,Unrealized Gain ($),Unrealized Gain (%),Value",
+    "AAA,\"Alpha, Inc.\",2,25,50,10,20,60",
+    "BBB,Beta Corp.,1,30,30,10,33.3,40",
+    "AAA,Alpha Inc.,1,25,25,5,20,25",
+    "CASH,Cash,1,15,15,0,0,15",
+  ].join("\r\n");
+  const result = parsePortfolioCsv(csv);
+
+  assert.equal(result.basis, "Value");
+  assert.equal(result.importedRows, 3);
+  assert.equal(result.mergedRows, 1);
+  assert.equal(result.ignoredRows, 1);
+  assert.deepEqual(result.holdings, [
+    { symbol: "AAA", weight: 68 },
+    { symbol: "BBB", weight: 32 },
+  ]);
+});
+
+test("portfolio CSV import reports malformed rows without replacing the portfolio", () => {
+  assert.throws(
+    () => parsePortfolioCsv("Symbol,Value\nGOOD,100\nBAD SYMBOL,50"),
+    /row 3: invalid Symbol "BAD SYMBOL"/,
+  );
+  assert.throws(
+    () => parsePortfolioCsv("Name,Quantity\nAlpha,3"),
+    /Include a Symbol column and either a Value or Weight column/,
+  );
 });
 
 test("market route rejects unsafe symbols before source access", async () => {

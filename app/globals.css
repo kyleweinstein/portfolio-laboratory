@@ -39,6 +39,7 @@ input:focus,select:focus{outline:0;border-color:var(--accent);box-shadow:inset 0
 .holdings{margin:0 0 12px}.holding{margin:7px 0}
 .holding>input:first-child{font-weight:700;letter-spacing:.08em}.holding input,.holding select{width:100%;min-width:0}
 .weight-field{display:grid;grid-template-columns:minmax(0,1fr) 14px;gap:5px;align-items:center}.weight-field i{color:var(--ink-soft);font:400 .75rem var(--mono);font-style:normal}
+.allocation-actions{display:flex;gap:9px;flex-wrap:wrap}.import-notice{margin:13px 0 0;padding:10px 12px;border-left:4px solid var(--emerald);background:var(--paper-alt);color:var(--ink-soft);font:.72rem/1.5 var(--mono)}.import-notice.error{border-left-color:#C32B2B}
 .icon,.link{border:0;background:none;color:var(--ink-soft);font-size:1.35rem;cursor:pointer}.icon:hover,.link:hover{color:var(--accent)}
 .link{font:700 .78rem var(--mono);padding:0;text-transform:uppercase;letter-spacing:.05em}
 .primary,.secondary{border:1px solid var(--rule);border-radius:0;padding:11px 15px;font:700 .76rem var(--mono);text-transform:uppercase;letter-spacing:.06em;cursor:pointer;transition:background .15s,color .15s,border-color .15s}

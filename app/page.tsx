@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { parsePortfolioCsv } from "./portfolio-csv";
 
 const STYLE_OPTIONS = [
   "Large Growth", "Large Blend", "Large Value", "Mid Cap", "Small Cap",
@@ -140,6 +141,23 @@ function fetchSeries(symbol: string, years: number): Promise<Series> {
   });
 }
 
+async function mapWithConcurrency<T, Result>(
+  items: T[],
+  limit: number,
+  mapper: (item: T) => Promise<Result>,
+) {
+  const results = new Array<Result>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 function alignedReturns(series: Record<string, Series>, symbols: string[]) {
   const maps = symbols.map(symbol => new Map(series[symbol].dates.map((date, i) => [date, series[symbol].prices[i]])));
   const dates = [...maps[0].keys()].filter(date => maps.every(map => map.has(date))).sort();
@@ -209,8 +227,11 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [optimized, setOptimized] = useState<number[] | null>(null);
   const [pendingOptimization, setPendingOptimization] = useState<"minvol" | "maxsharpe" | null>(null);
+  const [pendingImportRefresh, setPendingImportRefresh] = useState(false);
   const [selectedSeries, setSelectedSeries] = useState<string[]>(["Portfolio", "SPY", "QQQ"]);
+  const [importNotice, setImportNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const didAutoLoad = useRef(false);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const activeHoldings = useMemo(() => holdings
     .map((holding, rowIndex) => ({ ...holding, rowIndex, symbol: holding.symbol.trim().toUpperCase() }))
@@ -405,11 +426,17 @@ function App() {
     try {
       if (new Set(symbols).size !== symbols.length) throw new Error("Each holding symbol must be unique.");
       const coreSymbols = [...new Set([...symbols, benchmark.toUpperCase()])];
-      const coreResults = await Promise.all(coreSymbols.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
+      const coreResults = await mapWithConcurrency(coreSymbols, 6, async symbol => [symbol, await fetchSeries(symbol, years)] as const);
       setData(Object.fromEntries(coreResults));
       const proxySymbols = ALL_PROXY_SYMBOLS.filter(symbol => !coreSymbols.includes(symbol));
-      const proxyResults = await Promise.allSettled(proxySymbols.map(async symbol => [symbol, await fetchSeries(symbol, years)] as const));
-      const availableProxies = proxyResults.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+      const proxyResults = await mapWithConcurrency(proxySymbols, 6, async symbol => {
+        try {
+          return [symbol, await fetchSeries(symbol, years)] as const;
+        } catch {
+          return null;
+        }
+      });
+      const availableProxies = proxyResults.filter((result): result is readonly [string, Series] => result !== null);
       setData(Object.fromEntries([...coreResults, ...availableProxies]));
     } catch (caught) {
       setData({});
@@ -425,6 +452,48 @@ function App() {
     didAutoLoad.current = true;
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!pendingImportRefresh) return;
+    setPendingImportRefresh(false);
+    void refresh();
+  }, [pendingImportRefresh]);
+
+  async function importPortfolio(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setImportNotice({ type: "error", message: "Choose a .csv file." });
+      return;
+    }
+    if (file.size > 2_000_000) {
+      setImportNotice({ type: "error", message: "Choose a CSV smaller than 2 MB." });
+      return;
+    }
+
+    try {
+      const imported = parsePortfolioCsv(await file.text());
+      const duplicateText = imported.mergedRows ? ` ${imported.mergedRows} duplicate row${imported.mergedRows === 1 ? " was" : "s were"} merged.` : "";
+      const ignoredText = imported.ignoredRows ? ` ${imported.ignoredRows} zero-value or cash row${imported.ignoredRows === 1 ? " was" : "s were"} ignored.` : "";
+      setHoldings(imported.holdings);
+      setData({});
+      setError("");
+      setOptimized(null);
+      setPendingOptimization(null);
+      setSelectedSeries(["Portfolio", ...imported.holdings.slice(0, 2).map(holding => holding.symbol)]);
+      setImportNotice({
+        type: "success",
+        message: `Imported ${imported.holdings.length} holding${imported.holdings.length === 1 ? "" : "s"} from ${file.name}. Weights were calculated from ${imported.basis} and normalized to 100%.${duplicateText}${ignoredText} Refreshing analysis…`,
+      });
+      setPendingImportRefresh(true);
+    } catch (caught) {
+      setImportNotice({
+        type: "error",
+        message: caught instanceof Error ? caught.message : "The portfolio CSV could not be imported.",
+      });
+    }
+  }
 
   function updateHolding(index: number, field: keyof Holding, value: string) {
     setHoldings(previous => previous.map((holding, i) => i === index
@@ -530,8 +599,13 @@ function App() {
           <button className="icon" aria-label={`Remove ${holding.symbol}`} onClick={() => setHoldings(previous => previous.filter((_, j) => j !== i))}>×</button>
         </div>)}</div>
       </div>
-      <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", weight: 0 }])}>+ Add holding</button>
-      <p className="note">Weights are normalized to 100% for calculations. Style, sector, and factor are inferred automatically from each holding’s return relationship to representative ETFs.</p>
+      <div className="allocation-actions">
+        <input ref={csvInputRef} className="sr-only" type="file" accept=".csv,text/csv" onChange={importPortfolio}/>
+        <button className="secondary" disabled={loading} onClick={() => csvInputRef.current?.click()}>Import portfolio CSV</button>
+        <button className="secondary" onClick={() => setHoldings(previous => [...previous, { symbol: "", weight: 0 }])}>+ Add holding</button>
+      </div>
+      {importNotice && <p className={`import-notice ${importNotice.type}`} role={importNotice.type === "error" ? "alert" : "status"}>{importNotice.message}</p>}
+      <p className="note">CSV import accepts a Symbol column plus Value or Weight; Value-based files are converted into portfolio weights. The file itself is parsed only in your browser and is not uploaded or retained; imported ticker symbols are then used for market-data requests. Weights are normalized to 100% for calculations. Style, sector, and factor are inferred automatically from each holding’s return relationship to representative ETFs.</p>
     </section>
 
     <section className="card optimizer-card">
