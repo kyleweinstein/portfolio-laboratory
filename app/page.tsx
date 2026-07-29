@@ -482,7 +482,7 @@ function App() {
 
   function comparePair(a: number, b: number) {
     setSelectedSeries([symbols[a], symbols[b]]);
-    document.getElementById("performance-overlay")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.getElementById("direction-comparison")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function toggleSeries(name: string) {
@@ -595,15 +595,15 @@ function App() {
         <p className="note">Classifications are best-fit historical inferences, not issuer classifications or factor-regression estimates; low-confidence labels may change with the analysis window. Addition scores combine low allocation exposure with low correlation to the portfolio. They are balance prompts—not target weights or trade recommendations. When more than six radar categories are present, smaller categories are combined as Other.</p>
       </section>
 
-      <section className="card performance-card" id="performance-overlay">
-        <div className="section-title"><div><span className="eyebrow">Relative path of wealth</span><h2>Multi-asset performance overlay</h2></div><span className="pill">{effectiveSelectedSeries.length} series</span></div>
-        <p className="chart-intro">Compare at least two normalized paths to see when paired holdings diverged and converged. Click a pairing opportunity below to load it here.</p>
+      <section className="card performance-card" id="direction-comparison">
+        <div className="section-title"><div><span className="eyebrow">Directional co-movement</span><h2>Up / down direction comparison</h2></div><span className="pill">{effectiveSelectedSeries.length} equal-scale lanes</span></div>
+        <p className="chart-intro">Each selected asset gets an equal-height lane. Positive days point up and negative days point down; return magnitude is deliberately removed so aligned and opposing moves remain visible even when one asset dramatically outperforms.</p>
         <div className="overlay-controls">{["Portfolio", ...symbols].map((name, i) => {
           const active = effectiveSelectedSeries.includes(name);
           const color = name === "Portfolio" ? "#111111" : COLORS[(i - 1) % COLORS.length];
           return <label className={active ? "series-toggle active" : "series-toggle"} key={name}><input type="checkbox" checked={active} onChange={() => toggleSeries(name)} disabled={active && effectiveSelectedSeries.length <= 2}/><i style={{ background: color }}/>{name}</label>;
         })}</div>
-        <CumulativeChart dates={calculation.aligned.dates} series={chartSeries}/>
+        <DirectionChart dates={calculation.aligned.dates} series={chartSeries}/>
       </section>
 
       <section className="grid two pairing-grid">
@@ -613,7 +613,7 @@ function App() {
           <div className="pair-list">{calculation.pairs.slice(0, 8).map(pair => <div className="pair-row" key={`${pair.a}-${pair.b}`}>
             <div><strong>{symbols[pair.a]} / {symbols[pair.b]}</strong><span className={`correlation-tag ${pair.correlation < 0 ? "negative" : ""}`}>{classifyCorrelation(pair.correlation)}</span></div>
             <dl><div><dt>Corr.</dt><dd>{num(pair.correlation)}</dd></div><div><dt>Spread vol.</dt><dd>{pct(pair.spreadVolatility)}</dd></div><div><dt>Rebalance potential*</dt><dd>{pct(pair.rebalancePotential)}</dd></div></dl>
-            <button className="link" onClick={() => comparePair(pair.a, pair.b)}>Compare paths ↑</button>
+            <button className="link" onClick={() => comparePair(pair.a, pair.b)}>Compare directions ↑</button>
           </div>)}</div>
           <p className="note">*Heuristic = annualized volatility of the pair’s return spread × (1 − correlation) ÷ 2. It measures relative motion, not expected profit.</p>
         </div>
@@ -637,7 +637,7 @@ function App() {
           <div className="bucket-header"><div><span className="bucket-number">Bucket {String(bucket.id).padStart(2, "0")}</span><h3>{bucket.indices.map(index => symbols[index]).join(" / ")}</h3></div><span className={bucket.triggered ? "pill warn" : "pill ok"}>{bucket.triggered ? "Rebalance" : "Inside band"}</span></div>
           <div className="bucket-metrics"><div><span>Avg. correlation</span><strong>{num(bucket.averageCorrelation)}</strong></div><div><span>Max mix drift</span><strong>{pp(bucket.drift)}</strong></div><div><span>Band</span><strong>{rebalanceBand.toFixed(1)} pp</strong></div><div><span>Potential*</span><strong>{pct(bucket.rebalancePotential)}</strong></div></div>
           <div className="bucket-allocations">{bucket.indices.map((index, i) => <div key={symbols[index]}><b>{symbols[index]}</b><span>Target mix {pct(bucket.targetMix[i])}</span><span>Drifted mix {pct(bucket.driftedMix[i])}</span><span className={Math.abs(bucket.deltas[i]) > .0005 ? "trade" : ""}>{bucket.deltas[i] > .0005 ? `Add ${pp(bucket.deltas[i])}` : bucket.deltas[i] < -.0005 ? `Trim ${pp(-bucket.deltas[i])}` : "No trade"}</span></div>)}</div>
-          <button className="link" onClick={() => setSelectedSeries(bucket.indices.map(index => symbols[index]))}>Overlay this bucket ↑</button>
+          <button className="link" onClick={() => setSelectedSeries(bucket.indices.map(index => symbols[index]))}>Compare directions ↑</button>
         </article>)}</div>
         <p className="note">Drifted weights assume the portfolio began at its target weights {calculation.driftWindow} aligned trading days ago and then received no trades or cash flows. A triggered instruction is expressed in total-portfolio percentage points; translate it into dollars using the portfolio value at trade time.</p>
       </section>
@@ -702,33 +702,43 @@ function RadarPlot({ title, data, color }: { title: string; data: RadarDatum[]; 
   </article>;
 }
 
-function CumulativeChart({ dates, series }: { dates: string[]; series: ChartSeries[] }) {
-  const paths = series.map(item => {
-    let wealth = 1;
-    return item.returns.map(value => (wealth *= Math.exp(value)));
-  });
-  const observedMin = Math.min(...paths.flat());
-  const observedMax = Math.max(...paths.flat());
-  const padding = Math.max((observedMax - observedMin) * .08, .02);
-  const domainMin = Math.max(0, observedMin - padding);
-  const domainMax = observedMax + padding;
-  const left = 62, right = 900, top = 20, bottom = 270;
-  const x = (index: number, length: number) => left + (index / Math.max(length - 1, 1)) * (right - left);
-  const y = (value: number) => bottom - ((value - domainMin) / (domainMax - domainMin || 1)) * (bottom - top);
-  const points = (path: number[]) => path.map((value, i) => `${x(i, path.length)},${y(value)}`).join(" ");
-  const yTicks = [domainMax, (domainMax + domainMin) / 2, domainMin];
+function DirectionChart({ dates, series }: { dates: string[]; series: ChartSeries[] }) {
+  const left = 112;
+  const right = 910;
+  const top = 16;
+  const rowHeight = 60;
+  const axisY = top + series.length * rowHeight;
+  const height = axisY + 42;
+  const x = (index: number) => left + (index / Math.max(dates.length - 1, 1)) * (right - left);
+  const strokeWidth = Math.max(.8, Math.min(2.2, (right - left) / Math.max(dates.length, 1) * .8));
+  const directionPath = (returns: number[], direction: "up" | "down", baseline: number) => returns.map((value, index) => {
+    if ((direction === "up" && value <= 0) || (direction === "down" && value >= 0)) return "";
+    const end = baseline + (direction === "up" ? -18 : 18);
+    return `M${x(index).toFixed(2)},${baseline}V${end}`;
+  }).join(" ");
   const dateIndexes = [0, Math.floor((dates.length - 1) / 2), dates.length - 1];
-  return <div className="chart">
-    <svg viewBox="0 0 1000 320" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="performance-title performance-description">
-      <title id="performance-title">Normalized performance comparison</title>
-      <desc id="performance-description">Growth of one dollar for {series.map(item => item.name).join(", ")} from {dates[0]} through {dates.at(-1)}.</desc>
-      {yTicks.map(value => <g key={value}><line x1={left} y1={y(value)} x2={right} y2={y(value)}/><text x={left - 10} y={y(value) + 4} textAnchor="end">${value.toFixed(2)}</text></g>)}
-      {dateIndexes.map(index => <text key={index} x={x(index, dates.length)} y={bottom + 25} textAnchor={index === 0 ? "start" : index === dates.length - 1 ? "end" : "middle"}>{dates[index]}</text>)}
-      <line className="axis" x1={left} y1={top} x2={left} y2={bottom}/><line className="axis" x1={left} y1={bottom} x2={right} y2={bottom}/>
-      {paths.map((path, i) => <polyline key={series[i].name} points={points(path)} style={{ stroke: series[i].color }}/>)}
-    </svg>
-    <div className="legend">{series.map((item, i) => <span key={item.name}><i style={{ background: item.color }}/>{item.name} <b>${paths[i].at(-1)?.toFixed(2)}</b></span>)}</div>
-    <small>{dates[0]} — {dates.at(-1)} · each series normalized to $1.00 · adjusted close</small>
+  return <div className="direction-chart">
+    <div className="direction-scroll"><svg viewBox={`0 0 1000 ${height}`} preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="direction-title direction-description">
+      <title id="direction-title">Daily up and down direction comparison</title>
+      <desc id="direction-description">Equal-height lanes for {series.map(item => item.name).join(", ")} from {dates[0]} through {dates.at(-1)}. Positive daily returns extend above each baseline and negative daily returns extend below it. Return magnitude is not shown.</desc>
+      {dateIndexes.map(index => <line className="date-guide" key={`guide-${index}`} x1={x(index)} y1={top} x2={x(index)} y2={axisY}/>)}
+      {series.map((item, index) => {
+        const baseline = top + index * rowHeight + rowHeight / 2;
+        const positiveDays = item.returns.filter(value => value > 0).length;
+        const upShare = positiveDays / Math.max(item.returns.length, 1);
+        return <g key={item.name}>
+          <line className="lane-baseline" x1={left} y1={baseline} x2={right} y2={baseline}/>
+          <rect className="lane-key" x="18" y={baseline - 5} width="10" height="10" style={{ fill: item.color }}/>
+          <text className="lane-label" x="36" y={baseline + 4}>{item.name}</text>
+          <text className="lane-share" x="978" y={baseline + 4} textAnchor="end">↑ {pct(upShare, 0)}</text>
+          <path className="direction-up" d={directionPath(item.returns, "up", baseline)} style={{ strokeWidth }}/>
+          <path className="direction-down" d={directionPath(item.returns, "down", baseline)} style={{ strokeWidth }}/>
+        </g>;
+      })}
+      {dateIndexes.map(index => <text key={`date-${index}`} x={x(index)} y={axisY + 25} textAnchor={index === 0 ? "start" : index === dates.length - 1 ? "end" : "middle"}>{dates[index]}</text>)}
+    </svg></div>
+    <div className="direction-key"><span><i className="up"/>↑ Up day</span><span><i className="down"/>↓ Down day</span><span>Right label = share of up days</span></div>
+    <small>{dates[0]} — {dates.at(-1)} · daily adjusted-close direction · fixed ±1 encoding · magnitude intentionally omitted</small>
   </div>;
 }
 

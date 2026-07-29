@@ -12,12 +12,14 @@ Portfolio Laboratory is an interactive portfolio-risk and allocation dashboard b
 - Holding and portfolio beta relative to the selected benchmark
 - Portfolio composition across automatically inferred style, sector, and primary-factor dimensions, shown as shared-scale radar small multiples
 - Pairwise Pearson correlations of aligned daily log returns
-- A selectable growth-of-$1 overlay for two or more holdings
+- A selectable, equal-height direction chart for two or more holdings that encodes each aligned daily return as up or down while intentionally omitting magnitude
 - Ranked pair opportunities using correlation, spread volatility, and a clearly labeled relative-motion heuristic
 - Greedy low-correlation rebalance buckets with target/price-implied mix, drift bands, and within-bucket trade instructions
 - Long-only minimum-volatility and maximum-Sharpe scenarios, with a 60% per-holding cap
 
 All return series use only dates present for every holding and the benchmark. Portfolio weights are normalized to 100% for calculations.
+
+The direction chart is designed for visual co-movement comparison, not performance measurement. It converts every positive aligned daily return to up and every negative return to down, so a high-performing asset cannot compress the other holdings. Because magnitude is discarded, the pattern is related to—but not identical to—the Pearson return correlations reported elsewhere.
 
 ## Pairing and rebalance methodology
 

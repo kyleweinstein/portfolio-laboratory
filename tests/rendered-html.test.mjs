@@ -27,9 +27,12 @@ test("server renders the portfolio dashboard shell", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("client analysis includes pairing, overlays, radar dimensions, and automatic drift controls", async () => {
+test("client analysis includes pairing, equal-scale direction lanes, radar dimensions, and automatic drift controls", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(source, /Multi-asset performance overlay/);
+  assert.match(source, /Up \/ down direction comparison/);
+  assert.match(source, /<DirectionChart/);
+  assert.match(source, /fixed ±1 encoding/);
+  assert.doesNotMatch(source, /CumulativeChart|Growth of one dollar|Multi-asset performance overlay/);
   assert.match(source, /Lowest-correlation opportunities/);
   assert.match(source, /Suggested rebalance buckets/);
   assert.match(source, /Style \/ sector \/ factor radar/);
