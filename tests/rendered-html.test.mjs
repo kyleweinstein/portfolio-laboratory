@@ -34,6 +34,7 @@ test("client analysis uses explicit snapshots, worker analytics, bounded directi
   const analytics = await readFile(new URL("../app/analytics.ts", import.meta.url), "utf8");
   const map = await readFile(new URL("../app/diversification-map.tsx", import.meta.url), "utf8");
   assert.match(source, /<h1>PORTFOLIO LAB<\/h1>/);
+  assert.match(source, /<span className="eyebrow">THE SEER&apos;S<\/span>/);
   assert.doesNotMatch(source, /<span className="eyebrow">Portfolio laboratory<\/span>/i);
   assert.match(source, /Analyze portfolio/);
   assert.match(source, /Changes not analyzed/);

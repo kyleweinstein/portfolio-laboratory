@@ -350,7 +350,7 @@ function App() {
 
   return <main>
     <header>
-      <div><h1>PORTFOLIO LAB</h1><p>Design, stress-check, pair, and rebalance a long-only portfolio using adjusted daily closes.</p></div>
+      <div><span className="eyebrow">THE SEER&apos;S</span><h1>PORTFOLIO LAB</h1><p>Design, stress-check, pair, and rebalance a long-only portfolio using adjusted daily closes.</p></div>
       <div className="masthead-action"><button className="primary" onClick={analyze} disabled={busy}>{analyzeLabel}</button>{dirty && <span className="stale-badge">Changes not analyzed</span>}</div>
     </header>
 
