@@ -20,7 +20,8 @@ test("server renders the portfolio dashboard shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<title>Portfolio Laboratory<\/title>/i);
-  assert.match(html, /Clear allocation decisions/);
+  assert.match(html, />PORTFOLIO LAB</);
+  assert.doesNotMatch(html, /Clear allocation decisions/);
   assert.match(html, /Yahoo Finance public chart data/);
   assert.match(html, /Minimum volatility/);
   assert.match(html, /Maximum Sharpe/);
@@ -28,8 +29,16 @@ test("server renders the portfolio dashboard shell", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("client analysis includes pairing, equal-scale direction lanes, radar dimensions, and automatic drift controls", async () => {
+test("client analysis uses explicit snapshots, worker analytics, bounded direction lanes, and an adaptive map", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const analytics = await readFile(new URL("../app/analytics.ts", import.meta.url), "utf8");
+  const map = await readFile(new URL("../app/diversification-map.tsx", import.meta.url), "utf8");
+  assert.match(source, /<h1>PORTFOLIO LAB<\/h1>/);
+  assert.doesNotMatch(source, /<span className="eyebrow">Portfolio laboratory<\/span>/i);
+  assert.match(source, /Analyze portfolio/);
+  assert.match(source, /Changes not analyzed/);
+  assert.match(source, /new Worker\(new URL\("\.\/analytics\.worker\.ts"/);
+  assert.match(source, /\/api\/market\/batch/);
   assert.match(source, /Up \/ down direction comparison/);
   assert.match(source, /<DirectionChart/);
   assert.match(source, /fixed ±1 encoding/);
@@ -38,18 +47,23 @@ test("client analysis includes pairing, equal-scale direction lanes, radar dimen
   assert.match(source, /Suggested rebalance buckets/);
   assert.match(source, /Style \/ sector \/ factor radar/);
   assert.match(source, /<RadarPlot title="Factor"/);
-  assert.match(source, /STYLE_PROXIES/);
-  assert.match(source, /SECTOR_PROXIES/);
-  assert.match(source, /FACTOR_PROXIES/);
-  assert.match(source, /inferCategory/);
+  assert.match(analytics, /STYLE_PROXIES/);
+  assert.match(analytics, /SECTOR_PROXIES/);
+  assert.match(analytics, /FACTOR_PROXIES/);
+  assert.match(analytics, /inferCategory/);
   assert.match(source, /Automatic classification/);
   assert.match(source, /Style, sector, and factor are inferred automatically/);
-  assert.match(source, /underweight \* diversification/);
+  assert.match(analytics, /underweight \* diversification/);
   assert.match(source, /Volatility harvesting is not guaranteed/);
-  assert.match(source, /rebalancePotential: spreadVolatility \* \(1 - correlation\[a\]\[b\]\) \/ 2/);
-  assert.match(source, /triggered: drift >= rebalanceBand \/ 100/);
-  assert.match(source, /weight \* Math\.exp\(cumulativeReturn\)/);
-  assert.match(source, /disabled=\{activeHoldings\.length < 2 \|\| pendingOptimization !== null\}/);
+  assert.match(analytics, /rebalancePotential: spreadVolatility \* \(1 - correlation\) \/ 2/);
+  assert.match(analytics, /triggered: drift >= input\.rebalanceBand \/ 100/);
+  assert.match(analytics, /return weight \* Math\.exp\(cumulativeReturn\)/);
+  assert.match(source, /valid\.length >= 6/);
+  assert.match(map, /<canvas/);
+  assert.match(map, /effectiveCell >= 28/);
+  assert.match(map, /effectiveCell < 1/);
+  assert.match(map, /Clustered/);
+  assert.doesNotMatch(source, /className="cell"/);
   assert.doesNotMatch(source, /holding\.current|Current weight|<th>Current<\/th>/);
 });
 
@@ -95,4 +109,21 @@ test("market route rejects unsafe symbols before source access", async () => {
   );
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Enter a valid market symbol." });
+});
+
+test("batch market route validates the request before source access", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-batch`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("http://localhost/api/market/batch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbols: ["../secret"], years: 3 }),
+    }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Provide between 1 and 150 valid market symbols." });
 });
