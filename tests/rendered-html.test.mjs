@@ -33,6 +33,7 @@ test("client analysis uses explicit snapshots, worker analytics, bounded directi
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const analytics = await readFile(new URL("../app/analytics.ts", import.meta.url), "utf8");
   const map = await readFile(new URL("../app/diversification-map.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(source, /<h1>PORTFOLIO LAB<\/h1>/);
   assert.match(source, /<span className="eyebrow">THE SEER&apos;S<\/span>/);
   assert.doesNotMatch(source, /<span className="eyebrow">Portfolio laboratory<\/span>/i);
@@ -66,6 +67,8 @@ test("client analysis uses explicit snapshots, worker analytics, bounded directi
   assert.match(map, /Clustered/);
   assert.doesNotMatch(source, /className="cell"/);
   assert.doesNotMatch(source, /holding\.current|Current weight|<th>Current<\/th>/);
+  assert.match(styles, /\.controls\{display:grid;grid-template-columns:/);
+  assert.match(styles, /\.controls>label input,\.controls>label select\{width:100%;min-width:0;height:46px\}/);
 });
 
 test("portfolio CSV import derives weights from Value and merges duplicate symbols", () => {
