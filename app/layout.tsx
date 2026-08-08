@@ -11,7 +11,10 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase,
     title: "Portfolio Laboratory",
     description: "A transparent portfolio risk and optimization dashboard.",
-    icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
+    icons: {
+      icon: [{ url: "/seer-favicon.svg?v=faceted-seer-2", type: "image/svg+xml" }],
+      shortcut: "/seer-favicon.svg?v=faceted-seer-2",
+    },
     openGraph: {
       title: "Portfolio Laboratory",
       description: "Risk, correlation & allocation — made legible.",
