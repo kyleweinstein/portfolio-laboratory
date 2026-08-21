@@ -81,10 +81,11 @@ def test_official_live_calls_require_read_only_scope_confirmation() -> None:
         adapter_kind="official",
         webull_read_only_scope_confirmed=False,
     )
+    adapter = FakeWebullAdapter()
     client = TestClient(
         create_app(
             settings=runtime_settings,
-            adapter=FakeWebullAdapter(),
+            adapter=adapter,
             repository=MemoryRepository(),
         )
     )
@@ -99,6 +100,27 @@ def test_official_live_calls_require_read_only_scope_confirmation() -> None:
             "access is enabled."
         )
     }
+
+    scheduled = client.post("/v1/scheduled-sync", headers=headers())
+    assert scheduled.status_code == 503
+    assert adapter.calls == []
+
+
+def test_scheduled_sync_is_private_and_syncs_every_account() -> None:
+    adapter = FakeWebullAdapter()
+    repository = MemoryRepository()
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=repository)
+    )
+
+    assert client.post("/v1/scheduled-sync").status_code == 401
+    response = client.post("/v1/scheduled-sync", headers=headers())
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == 1
+    assert response.json()[0]["accountId"] == "fake-account-001"
+    assert response.json()[0]["positionsWritten"] == 2
+    assert repository.get_connection_state().connected is True
 
 
 def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:

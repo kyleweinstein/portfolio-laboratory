@@ -24,20 +24,29 @@ runtime token directory. Never commit them.
 - `CASH_ACTIVITY_LOOKBACK_DAYS` (default `45`), `SYNC_INTERVAL_SECONDS`
   (default `900`), and `AUTO_MIGRATE` (default `true`).
 
-Run the API with `python -m webull_service.serve`. Run one scheduled cycle with
-`python -m webull_service.scheduler`, or a dedicated worker with
-`python -m webull_service.scheduler --loop`. A Railway cron can invoke the
-one-shot command every 15 minutes; it safely no-ops until credentials exist and
-outside 9:30 a.m.-4:20 p.m. U.S. Eastern on weekdays. Manual API sync remains
+Run the API with `python -m webull_service.serve`. Configure a separate Railway
+cron service to run `python -m webull_service.cron_trigger` every 15 minutes. The
+trigger safely no-ops outside 9:30 a.m.-4:20 p.m. U.S. Eastern on weekdays and
+makes one authenticated request to the private API; manual API sync remains
 available at any time.
+
+The cron service needs only `WEBULL_SERVICE_URL`, `INTERNAL_API_TOKEN`, and
+`PORTFOLIO_OWNER_GITHUB_ID`. Point `WEBULL_SERVICE_URL` at the API service's
+private Railway URL. Use the same bearer token and owner ID on both services.
+The trigger accepts only a root URL on loopback or a `.railway.internal` host
+and refuses redirects. Do not give the cron service `WEBULL_APP_KEY`,
+`WEBULL_APP_SECRET`, `WEBULL_OPENAPI_TOKEN_DIR`, `DATABASE_URL`, or a persistent
+volume.
 
 ## First connection and token persistence
 
-Mount a private persistent Railway volume at `/data/webull-token` and set
-`WEBULL_OPENAPI_TOKEN_DIR=/data/webull-token` on both the API and scheduler.
-Webull's first approval can wait for in-app verification for up to five minutes;
-start it once with **Verify configured Webull account**, approve it in Webull,
-and wait for the request to finish. The saved token then survives restarts.
+Mount a private persistent Railway volume at `/data/webull-token` on the API
+service only and set its `WEBULL_OPENAPI_TOKEN_DIR=/data/webull-token`. The API
+service is the only service that receives Webull credentials or token-volume
+access. Webull's first approval can wait for in-app verification for up to five
+minutes; start it once with **Verify configured Webull account**, approve it in
+Webull, and wait for the request to finish. The saved token then survives API
+restarts.
 
 Before that first request, confirm in Webull's developer console that the key is
 limited to Account Infos and Order Query/read permissions. Only then set
@@ -56,6 +65,8 @@ requires both `Authorization: Bearer <INTERNAL_API_TOKEN>` and
 - `POST /v1/connect`, `DELETE /v1/connect`.
 - `POST /v1/accounts/select` with `{ "accountId": "..." }`.
 - `POST /v1/sync` and `POST /v1/backfill` with optional `accountId`.
+- `POST /v1/scheduled-sync`: private cron target that syncs every exposed
+  account after enforcing the read-only activation gate.
 - `GET /v1/portfolio`, `/v1/activities`, `/v1/orders`, and `/v1/issues`.
 - `GET /v1/capabilities?live=true` performs only non-mutating capability calls.
 

@@ -345,6 +345,11 @@ def create_app(
         account_id = selected_account(payload.account_id if payload else None)
         return sync_service.sync_account(account_id)
 
+    @router.post("/scheduled-sync", response_model=tuple[SyncResult, ...])
+    def scheduled_sync() -> tuple[SyncResult, ...]:
+        require_read_only_scope_confirmation()
+        return tuple(sync_service.sync_all())
+
     @router.post("/backfill", response_model=BackfillResult)
     def backfill(payload: BackfillRequest | None = None) -> BackfillResult:
         require_read_only_scope_confirmation()
