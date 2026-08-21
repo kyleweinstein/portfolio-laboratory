@@ -608,6 +608,21 @@ export default function WebullDashboard({
     };
   }, []);
 
+  useEffect(() => {
+    if (!status?.verificationInProgress || action === "connect") return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await loadStatus(undefined, true);
+      if (!cancelled) timer = window.setTimeout(poll, 3_000);
+    };
+    timer = window.setTimeout(poll, 3_000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [action, loadStatus, status?.verificationInProgress]);
+
   function chooseSource(nextSource: WebullSource) {
     if (nextSource === "webull" && failure?.kind === "disabled") return;
     if (source === undefined) setInternalSource(nextSource);
@@ -627,6 +642,11 @@ export default function WebullDashboard({
       if (!result.status) await loadStatus(undefined, true);
       setAnnouncement(result.message || (nextAction === "sync" ? "Webull sync completed." : nextAction === "backfill" ? "Webull history backfill requested." : "Webull account updated."));
     } catch (error) {
+      if (nextAction === "connect" && error instanceof WebullApiError && error.status === 409) {
+        await loadStatus(undefined, true);
+        setAnnouncement("Webull verification is already in progress. This page will update automatically.");
+        return;
+      }
       const nextFailure = stateFailure(error);
       setActionError(nextFailure.message);
       if (nextFailure.kind === "unauthorized") setFailure(nextFailure);
@@ -640,7 +660,7 @@ export default function WebullDashboard({
   }
 
   function signIn() {
-    window.location.assign(webullLoginUrl("/"));
+    window.location.assign(webullLoginUrl("/?source=webull"));
   }
 
   function selectAccount(accountId: string) {
@@ -656,6 +676,7 @@ export default function WebullDashboard({
   }
 
   const webullUnavailable = failure?.kind === "disabled";
+  const verificationInProgress = action === "connect" || Boolean(status?.verificationInProgress);
   const classes = ["webull-dashboard", className].filter(Boolean).join(" ");
 
   return (
@@ -664,7 +685,7 @@ export default function WebullDashboard({
       <div className="webull-source-tabs" role="tablist" aria-label="Portfolio source">
         <button id={tabId(baseId, "manual")} type="button" role="tab" aria-selected={selectedSource === "manual"} aria-controls={panelId(baseId, "manual")} tabIndex={selectedSource === "manual" ? 0 : -1} className={selectedSource === "manual" ? "webull-source-tab webull-source-tab-active" : "webull-source-tab"} onClick={() => chooseSource("manual")}>Manual</button>
         <button id={tabId(baseId, "webull")} type="button" role="tab" aria-selected={selectedSource === "webull"} aria-controls={panelId(baseId, "webull")} tabIndex={selectedSource === "webull" ? 0 : -1} aria-disabled={webullUnavailable} title={webullUnavailable ? "Webull is not configured for this deployment." : undefined} className={selectedSource === "webull" ? "webull-source-tab webull-source-tab-active" : "webull-source-tab"} onClick={() => chooseSource("webull")}>Webull</button>
-        <span className="webull-source-tab-status" role="status">{loading ? "Checking connection…" : status?.connected ? "Connected" : failure?.kind === "disabled" ? "Not configured" : "Not connected"}</span>
+        <span className="webull-source-tab-status" role="status">{loading ? "Checking connection…" : status?.connected ? "Connected" : status?.verificationInProgress ? "Verifying" : failure?.kind === "disabled" ? "Not configured" : "Not connected"}</span>
       </div>
 
       {selectedSource === "manual" ? (
@@ -692,10 +713,10 @@ export default function WebullDashboard({
               <span className="webull-eyebrow">Server-side read-only connection</span>
               <h2>Verify the configured Webull account.</h2>
               <p>Portfolio Lab will test the Webull API credentials configured on the server and load the accounts, balances, positions, and available history they can access. Credentials are never sent to this browser.</p>
-              <p className="webull-approval-note">First-time Webull approval can take up to five minutes. Start verification once, keep this page open, and do not retry while it is running.</p>
+              <p className="webull-approval-note">First-time Webull approval can take up to five minutes. Verification runs as one protected job: repeated starts are blocked, and returning to this tab will resume its status.</p>
               {actionError ? <div className="webull-notice webull-notice-error" role="alert">{actionError}</div> : null}
-              <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={connect}>{action === "connect" ? "Verifying…" : "Verify Webull connection"}</button>
-              {action === "connect" ? <p className="webull-approval-progress" role="status" aria-live="polite">Webull verification is in progress. Keep this page open; do not refresh or retry.</p> : null}
+              <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action) || Boolean(status.verificationInProgress)} onClick={connect}>{verificationInProgress ? "Verification in progress" : "Verify Webull connection"}</button>
+              {verificationInProgress ? <p className="webull-approval-progress" role="status" aria-live="polite">Verification is running as a single protected job. You may leave this page; Portfolio Lab will show the current status when you return.</p> : null}
             </div>
           ) : status ? (
             <ConnectedDashboard status={status} action={action} actionError={actionError} announcement={announcement} onSelectAccount={selectAccount} onSync={sync} onBackfill={backfill} onAnalyzeCurrentHoldings={onAnalyzeCurrentHoldings} />

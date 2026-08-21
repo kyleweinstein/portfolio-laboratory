@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from "react";
 import DiversificationMap from "./diversification-map";
 import { parsePortfolioCsv } from "./portfolio-csv";
 import WebullDashboard from "./webull-dashboard";
@@ -37,6 +37,21 @@ const COLORS = ["#FF3B00", "#2E5CC8", "#1B6B45", "#7B3FB5", "#9A6A00", "#111111"
 const TABLE_PAGE_SIZE = 25;
 const CLIENT_CACHE_TTL_MS = 60 * 60 * 1000;
 const marketCache = new Map<string, { series: RawSeries; fetchedAt: number }>();
+const PORTFOLIO_SOURCE_EVENT = "portfolio-source-change";
+
+function portfolioSourceSnapshot(): WebullSource {
+  const requested = new URLSearchParams(window.location.search).get("source");
+  return requested === "webull" ? "webull" : "manual";
+}
+
+function subscribePortfolioSource(listener: () => void) {
+  window.addEventListener("popstate", listener);
+  window.addEventListener(PORTFOLIO_SOURCE_EVENT, listener);
+  return () => {
+    window.removeEventListener("popstate", listener);
+    window.removeEventListener(PORTFOLIO_SOURCE_EVENT, listener);
+  };
+}
 
 function cachedSeries(years: number, symbol: string) {
   const cached = marketCache.get(`${years}:${symbol}`);
@@ -82,7 +97,11 @@ function snapshotKey(holdings: Holding[], benchmark: string, years: number, risk
 
 function App() {
   const [holdings, setHoldings] = useState<Holding[]>(DEFAULT_HOLDINGS);
-  const [portfolioSource, setPortfolioSource] = useState<WebullSource>("manual");
+  const portfolioSource = useSyncExternalStore(
+    subscribePortfolioSource,
+    portfolioSourceSnapshot,
+    () => "manual",
+  );
   const [benchmark, setBenchmark] = useState("SPY");
   const [years, setYears] = useState(3);
   const [riskFreeRate, setRiskFreeRate] = useState(.04);
@@ -113,6 +132,18 @@ function App() {
   const pendingWorkerRef = useRef(new Map<number, WorkerPending>());
   const requestIdRef = useRef(0);
   const revisionRef = useRef(0);
+
+  function changePortfolioSource(nextSource: WebullSource) {
+    const url = new URL(window.location.href);
+    if (nextSource === "webull") url.searchParams.set("source", "webull");
+    else url.searchParams.delete("source");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+    window.dispatchEvent(new Event(PORTFOLIO_SOURCE_EVENT));
+  }
 
   const activeHoldings = useMemo(() => holdings
     .map(holding => ({ ...holding, symbol: holding.symbol.trim().toUpperCase() }))
@@ -371,7 +402,7 @@ function App() {
       {portfolioSource === "manual" && <div className="masthead-action"><button className="primary" onClick={analyze} disabled={busy}>{analyzeLabel}</button>{dirty && <span className="stale-badge">Changes not analyzed</span>}</div>}
     </header>
 
-    <WebullDashboard source={portfolioSource} onSourceChange={setPortfolioSource} onAnalyzeCurrentHoldings={useWebullHoldings}/>
+    <WebullDashboard source={portfolioSource} onSourceChange={changePortfolioSource} onAnalyzeCurrentHoldings={useWebullHoldings}/>
 
     {portfolioSource === "manual" && <>
     <section className="control card"><div className="controls">

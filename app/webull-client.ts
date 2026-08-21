@@ -116,6 +116,7 @@ export type WebullStatus = {
   enabled: boolean;
   authenticated: boolean;
   connected: boolean;
+  verificationInProgress: boolean;
   csrfToken?: string | null;
   accounts: WebullAccount[];
   selectedAccountId: string | null;
@@ -206,6 +207,7 @@ export function normalizeWebullStatus(payload: unknown): WebullStatus {
     enabled: booleanValue(value.enabled, true),
     authenticated: booleanValue(value.authenticated, true),
     connected: booleanValue(value.connected, accounts.length > 0 || Boolean(dashboard)),
+    verificationInProgress: booleanValue(value.verificationInProgress, false),
     csrfToken,
     accounts,
     selectedAccountId,
