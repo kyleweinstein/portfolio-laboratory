@@ -15,6 +15,7 @@ test("Webull status normalizes wrapped responses without inventing connection st
         enabled: true,
         authenticated: true,
         connected: true,
+        verificationInProgress: true,
         csrfToken: "csrf-token-for-test-only-1234567890",
         accounts: [{ id: "acct-1", label: "Individual", last4: "1234", currency: "USD" }],
         selectedAccountId: "acct-1",
@@ -24,6 +25,7 @@ test("Webull status normalizes wrapped responses without inventing connection st
   });
 
   assert.equal(status.connected, true);
+  assert.equal(status.verificationInProgress, true);
   assert.equal(status.accounts[0].accountId, "acct-1");
   assert.match(status.accounts[0].maskedIdentifier, /1234$/);
   assert.equal(status.dashboard?.quality, "verified");
@@ -48,6 +50,7 @@ test("eligible Webull positions create one normalized long-only analytics sleeve
 
 test("Webull login URL accepts only same-origin relative return paths", () => {
   assert.equal(webullLoginUrl("/"), "/api/webull/auth/login?return_to=/");
+  assert.equal(webullLoginUrl("/?source=webull"), "/api/webull/auth/login?return_to=%2F%3Fsource%3Dwebull");
   assert.equal(webullLoginUrl("/portfolio?source=webull"), "/api/webull/auth/login?return_to=%2Fportfolio%3Fsource%3Dwebull");
   assert.equal(webullLoginUrl("https://attacker.example"), "/api/webull/auth/login?return_to=/");
   assert.equal(webullLoginUrl("//attacker.example"), "/api/webull/auth/login?return_to=/");
@@ -63,6 +66,7 @@ test("authenticated Webull mutations send the session CSRF token", async () => {
         enabled: true,
         authenticated: true,
         connected: false,
+        verificationInProgress: false,
         csrfToken: "csrf-token-for-test-only-1234567890",
         accounts: [],
         selectedAccountId: null,

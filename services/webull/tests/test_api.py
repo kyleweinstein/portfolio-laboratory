@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import Event
 
 from fastapi.testclient import TestClient
 
@@ -156,11 +158,65 @@ def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:
     assert disconnected.status_code == 200
     assert disconnected.json() == {
         "connected": False,
+        "verificationInProgress": False,
         "accounts": [],
         "selectedAccountId": None,
         "lastSyncedAt": None,
         "dashboard": None,
     }
+
+
+def test_connect_is_idempotent_and_rejects_overlapping_verification() -> None:
+    class BlockingConnectAdapter(FakeWebullAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+
+        def list_accounts(self):
+            self.started.set()
+            if not self.release.wait(timeout=5):
+                raise AssertionError("Test verification was not released.")
+            return super().list_accounts()
+
+    adapter = BlockingConnectAdapter()
+    repository = MemoryRepository()
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=repository)
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(client.post, "/v1/connect", headers=headers())
+        try:
+            assert adapter.started.wait(timeout=2)
+            status = client.get("/v1/status", headers=headers())
+            assert status.status_code == 200
+            assert status.json()["verificationInProgress"] is True
+
+            duplicate = client.post("/v1/connect", headers=headers())
+            assert duplicate.status_code == 409
+            assert duplicate.json() == {
+                "detail": "Webull verification is already in progress."
+            }
+            assert duplicate.headers["retry-after"] == "5"
+        finally:
+            adapter.release.set()
+
+        connected = first.result(timeout=5)
+
+    assert connected.status_code == 200, connected.text
+    assert connected.json()["verificationInProgress"] is False
+    broker_calls_after_first = tuple(
+        call for call in adapter.calls if call != ("probe", "False")
+    )
+
+    repeated = client.post("/v1/connect", headers=headers())
+    assert repeated.status_code == 200
+    assert repeated.json()["connected"] is True
+    assert repeated.json()["verificationInProgress"] is False
+    assert tuple(call for call in adapter.calls if call != ("probe", "False")) == (
+        broker_calls_after_first
+    )
 
 
 def test_statement_anchor_accepts_normalized_totals_not_documents() -> None:

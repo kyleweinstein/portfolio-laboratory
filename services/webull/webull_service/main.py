@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from threading import Lock
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
@@ -93,6 +94,7 @@ def create_app(
         runtime_repository,
         cash_activity_lookback_days=runtime_settings.cash_activity_lookback_days,
     )
+    verification_lock = Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -274,6 +276,7 @@ def create_app(
         if not state.connected or not state.selected_account_id:
             return ServiceStatus(
                 connected=state.connected,
+                verification_in_progress=verification_lock.locked(),
                 accounts=state.accounts,
                 selected_account_id=state.selected_account_id,
                 last_synced_at=state.last_synced_at,
@@ -298,6 +301,7 @@ def create_app(
         )
         return ServiceStatus(
             connected=True,
+            verification_in_progress=verification_lock.locked(),
             accounts=state.accounts,
             selected_account_id=account_id,
             last_synced_at=state.last_synced_at,
@@ -325,8 +329,20 @@ def create_app(
 
     @router.post("/connect", response_model=ServiceStatus)
     def connect() -> ServiceStatus:
+        if runtime_repository.get_connection_state().connected:
+            return status_response()
         require_read_only_scope_confirmation()
-        sync_service.connect(sync_selected=True)
+        if not verification_lock.acquire(blocking=False):
+            raise HTTPException(
+                status_code=409,
+                detail="Webull verification is already in progress.",
+                headers={"Retry-After": "5"},
+            )
+        try:
+            if not runtime_repository.get_connection_state().connected:
+                sync_service.connect(sync_selected=True)
+        finally:
+            verification_lock.release()
         return status_response()
 
     @router.delete("/connect", response_model=ServiceStatus)

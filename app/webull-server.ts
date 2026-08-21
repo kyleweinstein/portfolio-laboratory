@@ -105,6 +105,7 @@ export async function webullStatusResponse(
     enabled: isWebullIntegrationEnabled(env),
     authenticated: false,
     connected: false,
+    verificationInProgress: false,
     accounts: [] as unknown[],
     selectedAccountId: null as string | null,
     dashboard: null as unknown,
@@ -191,6 +192,7 @@ export async function webullStatusResponse(
   return jsonResponse({
     ...authenticatedBase,
     connected,
+    verificationInProgress: status?.verificationInProgress === true,
     accounts: accounts ?? [],
     selectedAccountId: nullableString(status?.selectedAccountId),
     dashboard,

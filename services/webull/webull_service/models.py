@@ -252,6 +252,7 @@ class DashboardState(NormalizedModel):
 
 class ServiceStatus(NormalizedModel):
     connected: bool
+    verification_in_progress: bool = False
     accounts: tuple[BrokerageAccount, ...]
     selected_account_id: str | None
     last_synced_at: datetime | None
