@@ -4,6 +4,7 @@ import {
   proxyWebullJson,
   readJsonBody,
   requestBodyErrorResponse,
+  webullStatusResponse,
 } from "../../../../webull-server";
 
 export async function POST(request: Request) {
@@ -18,10 +19,11 @@ export async function POST(request: Request) {
     ) {
       return jsonResponse({ error: "Select a valid Webull account." }, 400);
     }
-    return proxyWebullJson("/accounts/select", access.session, {
+    const response = await proxyWebullJson("/accounts/select", access.session, {
       method: "POST",
       body: { accountId },
     });
+    return response.ok ? webullStatusResponse(request) : response;
   } catch (caught) {
     return requestBodyErrorResponse(caught);
   }

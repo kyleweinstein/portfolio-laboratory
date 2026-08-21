@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeServiceDashboard } from "../app/webull-server.ts";
+import {
+  normalizeServiceDashboard,
+  webullStatusResponse,
+} from "../app/webull-server.ts";
+import {
+  GITHUB_SESSION_COOKIE,
+  createGitHubSession,
+  getGitHubAuthConfig,
+} from "../app/github-auth.ts";
 
 const serviceDashboard = {
   portfolio: {
@@ -80,4 +88,45 @@ test("no performance history stays explicitly partial and unavailable", () => {
   assert.equal(dashboard.quality, "partial");
   assert.equal(dashboard.metrics.timeWeightedReturn.value, null);
   assert.deepEqual(dashboard.chart, []);
+});
+
+test("status transport failures stay errors and preserve safe FastAPI details", async () => {
+  const env = {
+    WEBULL_INTEGRATION_ENABLED: "true",
+    WEBULL_SERVICE_URL: "https://webull.internal/",
+    WEBULL_INTERNAL_TOKEN: "test-internal-token-long-enough",
+    GITHUB_CLIENT_ID: "client-id",
+    GITHUB_CLIENT_SECRET: "client-secret",
+    GITHUB_SESSION_SECRET: "test-session-secret-that-is-longer-than-thirty-two-bytes",
+    GITHUB_OWNER_IDS: "12345",
+  };
+  const { cookieValue, session } = await createGitHubSession(
+    { id: "12345", login: "portfolio-owner" },
+    getGitHubAuthConfig(env),
+  );
+  const request = new Request("https://portfolio.example/api/webull/status", {
+    headers: { cookie: `${GITHUB_SESSION_COOKIE}=${cookieValue}` },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json(
+    { detail: "The selected account is unavailable." },
+    { status: 422 },
+  );
+
+  try {
+    const response = await webullStatusResponse(request, env);
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      enabled: true,
+      authenticated: true,
+      connected: false,
+      accounts: [],
+      selectedAccountId: null,
+      dashboard: null,
+      csrfToken: session.csrfToken,
+      error: "The selected account is unavailable.",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -129,17 +129,23 @@ export async function webullStatusResponse(
       env,
     );
   } catch (caught) {
-    return jsonResponse({
-      ...authenticatedBase,
-      error: safeServiceFailure(caught),
-    });
+    return jsonResponse(
+      {
+        ...authenticatedBase,
+        error: safeServiceFailure(caught),
+      },
+      502,
+    );
   }
 
   if (!serviceStatus.ok) {
-    return jsonResponse({
-      ...authenticatedBase,
-      error: serviceErrorMessage(serviceStatus),
-    });
+    return jsonResponse(
+      {
+        ...authenticatedBase,
+        error: serviceErrorMessage(serviceStatus),
+      },
+      502,
+    );
   }
 
   const status = asRecord(serviceStatus.data);
@@ -383,9 +389,17 @@ function safeServiceFailure(caught: unknown): string {
 function serviceErrorMessage(result: ServiceResult): string {
   const data = asRecord(result.data);
   if (result.status >= 400 && result.status < 500) {
-    const candidate = data?.error ?? data?.message;
+    const candidate = data?.error ?? data?.message ?? data?.detail;
     if (typeof candidate === "string" && candidate.length > 0) {
       return candidate.slice(0, 300);
+    }
+    if (Array.isArray(data?.detail)) {
+      const validation = data.detail
+        .map((item) => nullableString(asRecord(item)?.msg))
+        .filter((message): message is string => Boolean(message));
+      if (validation.length > 0) {
+        return `Invalid request: ${validation.join("; ")}`.slice(0, 300);
+      }
     }
   }
   return "The Webull service could not complete the request.";
