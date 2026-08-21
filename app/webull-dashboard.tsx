@@ -688,7 +688,15 @@ export default function WebullDashboard({
           ) : failure?.kind === "error" && !status ? (
             <div className="webull-state webull-state-error" role="alert"><span className="webull-eyebrow">Connection error</span><h2>Webull could not be loaded.</h2><p>{failure.message}</p><button type="button" className="webull-button" onClick={() => void loadStatus()}>Try again</button></div>
           ) : status && !status.connected ? (
-            <div className="webull-state"><span className="webull-eyebrow">Server-side read-only connection</span><h2>Verify the configured Webull account.</h2><p>Portfolio Lab will test the Webull API credentials configured on the server and load the accounts, balances, positions, and available history they can access. Credentials are never sent to this browser.</p>{actionError ? <div className="webull-notice webull-notice-error" role="alert">{actionError}</div> : null}<button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={connect}>{action === "connect" ? "Verifying…" : "Verify Webull connection"}</button></div>
+            <div className="webull-state">
+              <span className="webull-eyebrow">Server-side read-only connection</span>
+              <h2>Verify the configured Webull account.</h2>
+              <p>Portfolio Lab will test the Webull API credentials configured on the server and load the accounts, balances, positions, and available history they can access. Credentials are never sent to this browser.</p>
+              <p className="webull-approval-note">First-time Webull approval can take up to five minutes. Start verification once, keep this page open, and do not retry while it is running.</p>
+              {actionError ? <div className="webull-notice webull-notice-error" role="alert">{actionError}</div> : null}
+              <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={connect}>{action === "connect" ? "Verifying…" : "Verify Webull connection"}</button>
+              {action === "connect" ? <p className="webull-approval-progress" role="status" aria-live="polite">Webull verification is in progress. Keep this page open; do not refresh or retry.</p> : null}
+            </div>
           ) : status ? (
             <ConnectedDashboard status={status} action={action} actionError={actionError} announcement={announcement} onSelectAccount={selectAccount} onSync={sync} onBackfill={backfill} onAnalyzeCurrentHoldings={onAnalyzeCurrentHoldings} />
           ) : null}
@@ -718,6 +726,8 @@ const WEBULL_STYLES = `
 .webull-state-error{border-left:5px solid #C32B2B}
 .webull-state .webull-button{margin-top:18px}
 .webull-state-actions{display:flex;gap:9px;flex-wrap:wrap}.webull-state-actions .webull-button{margin-top:18px}
+.webull-approval-note{margin-top:12px!important;padding-left:11px;border-left:3px solid var(--amber);font:.72rem/1.5 var(--mono)!important}
+.webull-approval-progress{margin-top:10px!important;color:var(--amber)!important;font:700 .68rem/1.45 var(--mono)!important}
 .webull-loading-bar{height:4px;margin-top:20px;background:linear-gradient(90deg,var(--accent) 0 20%,var(--rule-light) 20% 100%);background-size:200% 100%;animation:webull-loading 1.2s linear infinite}
 @keyframes webull-loading{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.webull-loading-bar{animation:none}.webull-button{transition:none}}

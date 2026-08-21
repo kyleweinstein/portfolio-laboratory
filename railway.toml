@@ -1,10 +1,10 @@
 [build]
 builder = "RAILPACK"
-buildCommand = "npm ci && npm run build"
-watchPatterns = ["/app/**", "/build/**", "/db/**", "/public/**", "/worker/**", "/package.json", "/package-lock.json", "/vite.config.ts"]
+buildCommand = "pnpm run build"
+watchPatterns = ["/app/**", "/build/**", "/db/**", "/public/**", "/worker/**", "/package.json", "/package-lock.json", "/pnpm-lock.yaml", "/vite.config.ts"]
 
 [deploy]
-startCommand = "npm run start"
+startCommand = "pnpm run start"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"

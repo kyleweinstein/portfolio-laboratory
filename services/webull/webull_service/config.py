@@ -28,6 +28,7 @@ class Settings:
     webull_region: str = "us"
     webull_endpoint: str = "api.webull.com"
     webull_token_dir: str | None = None
+    webull_read_only_scope_confirmed: bool = False
     adapter_kind: str = "official"
     cash_activity_lookback_days: int = 45
     sync_interval_seconds: int = 900
@@ -46,6 +47,9 @@ class Settings:
             webull_region=os.getenv("WEBULL_REGION", "us").strip().lower(),
             webull_endpoint=os.getenv("WEBULL_API_ENDPOINT", "api.webull.com").strip(),
             webull_token_dir=os.getenv("WEBULL_OPENAPI_TOKEN_DIR") or None,
+            webull_read_only_scope_confirmed=_boolean(
+                "WEBULL_READ_ONLY_SCOPE_CONFIRMED", False
+            ),
             adapter_kind=os.getenv("WEBULL_ADAPTER", "official").strip().lower(),
             cash_activity_lookback_days=_integer("CASH_ACTIVITY_LOOKBACK_DAYS", 45, 1),
             sync_interval_seconds=_integer("SYNC_INTERVAL_SECONDS", 900, 60),

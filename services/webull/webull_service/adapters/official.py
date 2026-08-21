@@ -367,14 +367,15 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         seen_cursors: set[str] = set()
         rows: list[dict[str, Any]] = []
         for _ in range(100):
-            payload = self._response_json(
-                get_activities(
+            payload = self._invoke_sdk(
+                lambda cursor=cursor: get_activities(
                     account_id,
                     start_time=start_time,
                     end_time=end_time,
                     last_activity_id=cursor,
                     page_size=100,
-                )
+                ),
+                failure_message="Webull cash activities are unavailable.",
             )
             page = _items(payload, "activities", "data", "items", "list", "records")
             rows.extend(page)
@@ -414,15 +415,18 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         seen_cursors: set[tuple[str | None, str | None]] = set()
         rows: list[dict[str, Any]] = []
         for _ in range(500):
-            payload = self._response_json(
-                get_history(
-                    account_id,
-                    page_size=100,
-                    start_date=start_date,
-                    end_date=end_date,
-                    last_client_order_id=last_client_order_id,
-                    last_order_id=last_order_id,
-                )
+            payload = self._invoke_sdk(
+                lambda last_client_order_id=last_client_order_id, last_order_id=last_order_id: (
+                    get_history(
+                        account_id,
+                        page_size=100,
+                        start_date=start_date,
+                        end_date=end_date,
+                        last_client_order_id=last_client_order_id,
+                        last_order_id=last_order_id,
+                    )
+                ),
+                failure_message="Webull order history is unavailable.",
             )
             page = _flatten_order_rows(payload)
             rows.extend(page)
@@ -567,7 +571,25 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         )
 
     def _call(self, operation: Callable[[Any], Any]) -> Any:
-        return self._response_json(operation(self._client()))
+        return self._invoke_sdk(
+            lambda: operation(self._client()),
+            failure_message="Webull account request failed.",
+        )
+
+    def _invoke_sdk(
+        self,
+        operation: Callable[[], Any],
+        *,
+        failure_message: str,
+    ) -> Any:
+        """Run one SDK operation without exposing SDK exception details."""
+
+        try:
+            return self._response_json(operation())
+        except WebullAdapterError:
+            raise
+        except Exception:  # noqa: BLE001 - third-party SDK exceptions are not stable.
+            raise WebullAdapterError(failure_message) from None
 
     def _client(self) -> Any:
         if self._trade_client is not None:
@@ -584,45 +606,38 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
                 "Install the official webull-openapi-python-sdk package."
             ) from exc
 
-        api_client = ApiClient(self._app_key, self._app_secret, self._region)
-        api_client.add_endpoint(self._region, self._endpoint)
-        if self._token_dir:
-            api_client.set_token_dir(self._token_dir)
-        # Mark logging as configured before TradeClient construction so the SDK
-        # cannot create its default local account log. Suppress SDK request/response
-        # logging because those records can contain private account identifiers.
         try:
-            api_client.set_stream_logger(
-                stream=_DiscardLogStream(),
-                log_level=logging.CRITICAL + 1,
-            )
-        except TypeError:
-            api_client.set_stream_logger(stream=_DiscardLogStream())
-        self._trade_client = TradeClient(api_client)
+            api_client = ApiClient(self._app_key, self._app_secret, self._region)
+            api_client.add_endpoint(self._region, self._endpoint)
+            if self._token_dir:
+                api_client.set_token_dir(self._token_dir)
+            # Mark logging as configured before TradeClient construction so the SDK
+            # cannot create its default local account log. Suppress SDK request/response
+            # logging because those records can contain private account identifiers.
+            try:
+                api_client.set_stream_logger(
+                    stream=_DiscardLogStream(),
+                    log_level=logging.CRITICAL + 1,
+                )
+            except TypeError:
+                api_client.set_stream_logger(stream=_DiscardLogStream())
+            self._trade_client = TradeClient(api_client)
+        except Exception:  # noqa: BLE001 - normalize every third-party SDK failure.
+            self._trade_client = None
+            raise WebullAdapterError("Webull SDK initialization failed.") from None
         return self._trade_client
 
     @staticmethod
     def _response_json(response: Any) -> Any:
         status_code = getattr(response, "status_code", None)
         if status_code != 200:
-            message = "Webull OpenAPI request failed."
-            try:
-                payload = response.json()
-                if isinstance(payload, dict):
-                    public_message = payload.get("message") or payload.get("error")
-                    if public_message:
-                        message = f"Webull OpenAPI request failed: {str(public_message)[:300]}"
-            except (AttributeError, TypeError, ValueError):
-                # Some SDK response wrappers do not expose a decodable body.
-                # Preserve the deliberately generic public error in that case.
-                message = "Webull OpenAPI request failed."
-            raise WebullAdapterError(message)
+            raise WebullAdapterError("Webull OpenAPI request failed.")
         try:
             return response.json()
-        except (AttributeError, TypeError, ValueError) as exc:
+        except Exception:  # noqa: BLE001 - response wrappers can raise SDK-specific errors.
             raise WebullAdapterError(
                 "Webull returned an invalid JSON response."
-            ) from exc
+            ) from None
 
 
 def _optional_decimal(value: Any) -> Decimal | None:

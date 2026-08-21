@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -55,6 +56,49 @@ def test_health_is_public_but_every_v1_route_requires_proxy_identity() -> None:
         ).status_code
         == 403
     )
+
+
+def test_missing_owner_configuration_keeps_health_public_but_protected_routes_closed() -> (
+    None
+):
+    client = TestClient(
+        create_app(
+            settings=replace(settings(), portfolio_owner_github_id=""),
+            adapter=FakeWebullAdapter(),
+            repository=MemoryRepository(),
+        )
+    )
+
+    assert client.get("/health").status_code == 200
+    response = client.get("/v1/status", headers=headers())
+    assert response.status_code == 503
+    assert response.json() == {"detail": "PORTFOLIO_OWNER_GITHUB_ID is not configured."}
+
+
+def test_official_live_calls_require_read_only_scope_confirmation() -> None:
+    runtime_settings = replace(
+        settings(),
+        adapter_kind="official",
+        webull_read_only_scope_confirmed=False,
+    )
+    client = TestClient(
+        create_app(
+            settings=runtime_settings,
+            adapter=FakeWebullAdapter(),
+            repository=MemoryRepository(),
+        )
+    )
+
+    health = client.get("/health").json()
+    assert health["webullReadOnlyScopeConfirmed"] is False
+    response = client.post("/v1/connect", headers=headers())
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": (
+            "WEBULL_READ_ONLY_SCOPE_CONFIRMED must be true before live Webull "
+            "access is enabled."
+        )
+    }
 
 
 def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:

@@ -468,7 +468,7 @@ export function normalizeServiceDashboard(
   const asOf = dateValue(balance.asOf) || lastSyncedAt;
   const currency = nullableString(balance.currency) || nullableString(account?.currency) || "USD";
   const equity = numberValue(balance.equity);
-  const positions = recordArray(portfolio.positions);
+  const positions = recordArray(portfolio?.positions);
   const eligibleMarketValue = positions.reduce((sum, position) => {
     return isEligiblePosition(position) ? sum + Math.max(0, numberValue(position.marketValue) ?? 0) : sum;
   }, 0);
