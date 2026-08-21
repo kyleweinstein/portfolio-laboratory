@@ -19,6 +19,7 @@ from .config import Settings
 from .migrate import run_migrations
 from .models import (
     BackfillResult,
+    BrokerageAccount,
     CapabilityReport,
     CashActivity,
     DashboardState,
@@ -290,6 +291,10 @@ def create_app(
     @router.get("/status", response_model=ServiceStatus)
     def status() -> ServiceStatus:
         return status_response()
+
+    @router.get("/accounts", response_model=tuple[BrokerageAccount, ...])
+    def accounts() -> tuple[BrokerageAccount, ...]:
+        return runtime_repository.get_connection_state().accounts
 
     @router.post("/connect", response_model=ServiceStatus)
     def connect() -> ServiceStatus:

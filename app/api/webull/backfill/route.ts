@@ -12,21 +12,25 @@ export async function POST(request: Request) {
   try {
     const input = await readJsonBody(request);
     const body: Record<string, unknown> = {};
-    for (const key of ["from", "to"] as const) {
-      if (!(key in input)) continue;
+    if ("accountId" in input) {
       if (
-        typeof input[key] !== "string" ||
-        !/^\d{4}-\d{2}-\d{2}$/.test(input[key])
+        typeof input.accountId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(input.accountId)
       ) {
-        return jsonResponse({ error: `${key} must be an ISO date.` }, 400);
+        return jsonResponse({ error: "Select a valid Webull account." }, 400);
       }
-      body[key] = input[key];
+      body.accountId = input.accountId;
     }
-    if ("force" in input) {
-      if (typeof input.force !== "boolean") {
-        return jsonResponse({ error: "force must be a boolean." }, 400);
+    if ("days" in input) {
+      if (
+        typeof input.days !== "number" ||
+        !Number.isSafeInteger(input.days) ||
+        input.days < 1 ||
+        input.days > 3650
+      ) {
+        return jsonResponse({ error: "days must be an integer from 1 to 3650." }, 400);
       }
-      body.force = input.force;
+      body.days = input.days;
     }
     return proxyWebullJson("/backfill", access.session, {
       method: "POST",

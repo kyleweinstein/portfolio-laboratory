@@ -71,6 +71,7 @@ def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:
     assert payload["selectedAccountId"] == "fake-account-001"
     assert payload["dashboard"]["portfolio"]["balance"]["equity"] == "15000.00"
     assert payload["dashboard"]["portfolio"]["positions"][0]["symbol"] == "AAPL"
+    assert client.get("/v1/accounts", headers=headers()).json() == payload["accounts"]
 
     synced = client.post("/v1/sync", headers=headers(), json={})
     assert synced.status_code == 200

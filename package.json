@@ -17,7 +17,7 @@
     "dev": "vite",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "vinext build && node --test tests/*.test.mjs",
+    "test": "vinext build && node --experimental-strip-types --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

@@ -1,4 +1,4 @@
-import type { HoldingInput } from "./analytics";
+import type { HoldingInput } from "./analytics.ts";
 
 export type WebullSource = "manual" | "webull";
 export type WebullQuality = "verified" | "estimated" | "partial" | "stale" | "unavailable";
