@@ -30,6 +30,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
+!services/**/.env.example
+
+# local package-manager cache
+/.pnpm-store/
 
 # vercel
 .vercel
@@ -41,3 +46,9 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/

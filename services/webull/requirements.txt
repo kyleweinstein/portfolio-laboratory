@@ -1,0 +1,5 @@
+fastapi>=0.116,<1
+psycopg[binary]>=3.2,<4
+pydantic>=2.11,<3
+uvicorn[standard]>=0.35,<1
+webull-openapi-python-sdk==2.0.16

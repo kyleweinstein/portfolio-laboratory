@@ -23,6 +23,9 @@ test("server renders the portfolio dashboard shell", async () => {
   assert.match(html, />PORTFOLIO LAB</);
   assert.doesNotMatch(html, /Clear allocation decisions/);
   assert.match(html, /Yahoo Finance public chart data/);
+  assert.match(html, />Manual</);
+  assert.match(html, />Webull</);
+  assert.match(html, /does not overwrite the manual draft/i);
   assert.match(html, /Minimum volatility/);
   assert.match(html, /Maximum Sharpe/);
   assert.match(html, /not investment, tax, or legal advice/i);
@@ -38,6 +41,8 @@ test("client analysis uses explicit snapshots, worker analytics, bounded directi
   assert.match(source, /<span className="eyebrow">THE SEER&apos;S<\/span>/);
   assert.doesNotMatch(source, /<span className="eyebrow">Portfolio laboratory<\/span>/i);
   assert.match(source, /Analyze portfolio/);
+  assert.match(source, /<WebullDashboard/);
+  assert.match(source, /onAnalyzeCurrentHoldings={useWebullHoldings}/);
   assert.match(source, /Changes not analyzed/);
   assert.match(source, /new Worker\(new URL\("\.\/analytics\.worker\.ts"/);
   assert.match(source, /\/api\/market\/batch/);
@@ -130,4 +135,38 @@ test("batch market route validates the request before source access", async () =
   );
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "Provide between 1 and 150 valid market symbols." });
+});
+
+test("Webull stays disabled by default without affecting the public manual app", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-webull-disabled`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("http://localhost/api/webull/status"),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    enabled: false,
+    authenticated: false,
+    connected: false,
+    accounts: [],
+    selectedAccountId: null,
+    dashboard: null,
+  });
+});
+
+test("Railway health endpoint is public and cache-safe", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-health`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("http://localhost/api/health"),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), { status: "ok" });
 });

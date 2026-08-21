@@ -1,0 +1,85 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  buildEligibleWebullHoldings,
+  getWebullStatus,
+  normalizeWebullStatus,
+  syncWebull,
+  webullLoginUrl,
+} from "../app/webull-client.ts";
+
+test("Webull status normalizes wrapped responses without inventing connection state", () => {
+  const status = normalizeWebullStatus({
+    data: {
+      data: {
+        enabled: true,
+        authenticated: true,
+        connected: true,
+        csrfToken: "csrf-token-for-test-only-1234567890",
+        accounts: [{ id: "acct-1", label: "Individual", last4: "1234", currency: "USD" }],
+        selectedAccountId: "acct-1",
+        dashboard: { accountId: "acct-1", quality: "verified", holdings: [] },
+      },
+    },
+  });
+
+  assert.equal(status.connected, true);
+  assert.equal(status.accounts[0].accountId, "acct-1");
+  assert.match(status.accounts[0].maskedIdentifier, /1234$/);
+  assert.equal(status.dashboard?.quality, "verified");
+});
+
+test("eligible Webull positions create one normalized long-only analytics sleeve", () => {
+  const holdings = buildEligibleWebullHoldings([
+    { symbol: " aapl ", instrumentType: "EQUITY", marketValue: "600" },
+    { symbol: "AAPL", instrumentType: "STOCK", marketValue: 150 },
+    { symbol: "SPY", instrumentType: "ETF", marketValue: 250 },
+    { symbol: "CASH", instrumentType: "CASH", marketValue: 100 },
+    { symbol: "TSLA", instrumentType: "EQUITY", marketValue: -50 },
+    { symbol: "BTC", instrumentType: "CRYPTO", marketValue: 500, eligibleForAnalysis: false },
+  ]);
+
+  assert.deepEqual(holdings, [
+    { symbol: "AAPL", weight: 75 },
+    { symbol: "SPY", weight: 25 },
+  ]);
+  assert.equal(holdings.reduce((sum, holding) => sum + holding.weight, 0), 100);
+});
+
+test("Webull login URL accepts only same-origin relative return paths", () => {
+  assert.equal(webullLoginUrl("/"), "/api/webull/auth/login?return_to=/");
+  assert.equal(webullLoginUrl("/portfolio?source=webull"), "/api/webull/auth/login?return_to=%2Fportfolio%3Fsource%3Dwebull");
+  assert.equal(webullLoginUrl("https://attacker.example"), "/api/webull/auth/login?return_to=/");
+  assert.equal(webullLoginUrl("//attacker.example"), "/api/webull/auth/login?return_to=/");
+});
+
+test("authenticated Webull mutations send the session CSRF token", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (input, init = {}) => {
+    requests.push({ input: String(input), init });
+    if (String(input).endsWith("/status")) {
+      return Response.json({
+        enabled: true,
+        authenticated: true,
+        connected: false,
+        csrfToken: "csrf-token-for-test-only-1234567890",
+        accounts: [],
+        selectedAccountId: null,
+        dashboard: null,
+      });
+    }
+    return Response.json({ message: "Sync accepted" });
+  };
+
+  try {
+    await getWebullStatus();
+    await syncWebull(null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(requests[1].input, "/api/webull/sync");
+  const headers = new Headers(requests[1].init.headers);
+  assert.equal(headers.get("x-portfolio-csrf"), "csrf-token-for-test-only-1234567890");
+});
