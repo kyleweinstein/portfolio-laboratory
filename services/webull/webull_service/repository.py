@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from threading import RLock
 from typing import Protocol
 from uuid import uuid4
 
@@ -18,8 +19,14 @@ from .models import (
     StatementAnchor,
     SyncResult,
     ValuationPoint,
+    VerificationAttempt,
+    VerificationError,
+    VerificationStage,
+    VerificationState,
     utc_now,
 )
+
+_VERIFICATION_LEASE = timedelta(minutes=7)
 
 
 class RepositoryError(RuntimeError):
@@ -31,6 +38,19 @@ class RepositoryConfigurationError(RepositoryError):
 
 
 class PortfolioRepository(Protocol):
+    def begin_verification_attempt(self) -> tuple[VerificationAttempt, bool]: ...
+    def get_verification_attempt(self) -> VerificationAttempt | None: ...
+    def advance_verification_attempt(
+        self, attempt_id: str, stage: VerificationStage
+    ) -> VerificationAttempt: ...
+    def finish_verification_attempt(
+        self,
+        attempt_id: str,
+        state: VerificationState,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> VerificationAttempt: ...
     def connect_accounts(self, accounts: list[BrokerageAccount]) -> ConnectionState: ...
     def get_connection_state(self) -> ConnectionState: ...
     def select_account(self, account_id: str) -> ConnectionState: ...
@@ -78,6 +98,153 @@ class PostgresRepository:
         if not self._database_url:
             raise RepositoryConfigurationError("DATABASE_URL is not configured.")
         return psycopg.connect(self._database_url, row_factory=dict_row)
+
+    def begin_verification_attempt(self) -> tuple[VerificationAttempt, bool]:
+        now = utc_now()
+        attempt_id = str(uuid4())
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._expire_verification_attempts(cursor, now)
+            cursor.execute(
+                """
+                INSERT INTO verification_attempts (
+                    attempt_id, provider, state, stage, started_at, updated_at,
+                    lease_expires_at
+                ) VALUES (%s, 'webull', 'RUNNING', 'STARTING', %s, %s, %s)
+                ON CONFLICT (provider) WHERE state = 'RUNNING' DO NOTHING
+                RETURNING attempt_id, state, stage, started_at, updated_at,
+                          lease_expires_at, completed_at, error_code, error_message
+                """,
+                (attempt_id, now, now, now + _VERIFICATION_LEASE),
+            )
+            row = cursor.fetchone()
+            created = row is not None
+            if row is None:
+                cursor.execute(
+                    """
+                    SELECT attempt_id, state, stage, started_at, updated_at,
+                           lease_expires_at, completed_at, error_code, error_message
+                    FROM verification_attempts
+                    WHERE provider = 'webull' AND state = 'RUNNING'
+                    ORDER BY started_at DESC, attempt_id DESC
+                    LIMIT 1
+                    """
+                )
+                row = cursor.fetchone()
+            if row is None:
+                raise RepositoryError("Unable to create a verification attempt.")
+        return _verification_from_row(row), created
+
+    def get_verification_attempt(self) -> VerificationAttempt | None:
+        now = utc_now()
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._expire_verification_attempts(cursor, now)
+            cursor.execute(
+                """
+                SELECT attempt_id, state, stage, started_at, updated_at,
+                       lease_expires_at, completed_at, error_code, error_message
+                FROM verification_attempts
+                WHERE provider = 'webull'
+                ORDER BY started_at DESC, attempt_id DESC
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+        return _verification_from_row(row) if row is not None else None
+
+    def advance_verification_attempt(
+        self, attempt_id: str, stage: VerificationStage
+    ) -> VerificationAttempt:
+        now = utc_now()
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._expire_verification_attempts(cursor, now)
+            cursor.execute(
+                """
+                UPDATE verification_attempts
+                SET stage = %s, updated_at = %s, lease_expires_at = %s
+                WHERE attempt_id = %s AND provider = 'webull' AND state = 'RUNNING'
+                RETURNING attempt_id, state, stage, started_at, updated_at,
+                          lease_expires_at, completed_at, error_code, error_message
+                """,
+                (stage.name, now, now + _VERIFICATION_LEASE, attempt_id),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise RepositoryError("Verification attempt is no longer running.")
+        return _verification_from_row(row)
+
+    def finish_verification_attempt(
+        self,
+        attempt_id: str,
+        state: VerificationState,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> VerificationAttempt:
+        if state not in {VerificationState.SUCCEEDED, VerificationState.FAILED}:
+            raise ValueError("A verification attempt must finish succeeded or failed.")
+        now = utc_now()
+        stage = (
+            VerificationStage.COMPLETE.name
+            if state is VerificationState.SUCCEEDED
+            else None
+        )
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._expire_verification_attempts(cursor, now)
+            cursor.execute(
+                """
+                UPDATE verification_attempts
+                SET state = %s,
+                    stage = COALESCE(%s, stage),
+                    updated_at = %s,
+                    completed_at = %s,
+                    error_code = %s,
+                    error_message = %s
+                WHERE attempt_id = %s AND provider = 'webull' AND state = 'RUNNING'
+                RETURNING attempt_id, state, stage, started_at, updated_at,
+                          lease_expires_at, completed_at, error_code, error_message
+                """,
+                (
+                    state.name,
+                    stage,
+                    now,
+                    now,
+                    error_code[:64] if error_code else None,
+                    error_message[:500] if error_message else None,
+                    attempt_id,
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                cursor.execute(
+                    """
+                    SELECT attempt_id, state, stage, started_at, updated_at,
+                           lease_expires_at, completed_at, error_code, error_message
+                    FROM verification_attempts
+                    WHERE attempt_id = %s AND provider = 'webull'
+                    """,
+                    (attempt_id,),
+                )
+                row = cursor.fetchone()
+        if row is None:
+            raise RepositoryError("Verification attempt was not found.")
+        return _verification_from_row(row)
+
+    @staticmethod
+    def _expire_verification_attempts(cursor: psycopg.Cursor, now: datetime) -> None:
+        cursor.execute(
+            """
+            UPDATE verification_attempts
+            SET state = 'TIMED_OUT',
+                updated_at = %s,
+                completed_at = %s,
+                error_code = 'verification_timeout',
+                error_message = 'Verification timed out before completion.'
+            WHERE provider = 'webull'
+              AND state = 'RUNNING'
+              AND lease_expires_at <= %s
+            """,
+            (now, now, now),
+        )
 
     def connect_accounts(self, accounts: list[BrokerageAccount]) -> ConnectionState:
         if not accounts:
@@ -569,6 +736,8 @@ class MemoryRepository:
     """Transactional-behavior test repository; never selected by production config."""
 
     def __init__(self) -> None:
+        self._verification_lock = RLock()
+        self.verification_attempts: list[VerificationAttempt] = []
         self.connected = False
         self.accounts: dict[str, BrokerageAccount] = {}
         self.selected_account_id: str | None = None
@@ -579,6 +748,129 @@ class MemoryRepository:
         self.orders: dict[tuple[str, str], OrderRecord] = {}
         self.anchors: dict[tuple[str, str], StatementAnchor] = {}
         self.failures: list[tuple[str, str]] = []
+
+    def begin_verification_attempt(self) -> tuple[VerificationAttempt, bool]:
+        now = utc_now()
+        with self._verification_lock:
+            self._reconcile_expired_verification(now)
+            if self.verification_attempts:
+                latest = self.verification_attempts[-1]
+                if latest.state is VerificationState.RUNNING:
+                    return latest, False
+            attempt = VerificationAttempt(
+                attempt_id=str(uuid4()),
+                state=VerificationState.RUNNING,
+                stage=VerificationStage.STARTING,
+                started_at=now,
+                updated_at=now,
+                lease_expires_at=now + _VERIFICATION_LEASE,
+            )
+            self.verification_attempts.append(attempt)
+            return attempt, True
+
+    def get_verification_attempt(self) -> VerificationAttempt | None:
+        with self._verification_lock:
+            self._reconcile_expired_verification(utc_now())
+            return (
+                self.verification_attempts[-1] if self.verification_attempts else None
+            )
+
+    def advance_verification_attempt(
+        self, attempt_id: str, stage: VerificationStage
+    ) -> VerificationAttempt:
+        now = utc_now()
+        with self._verification_lock:
+            self._reconcile_expired_verification(now)
+            attempt = self._verification_by_id(attempt_id)
+            if attempt.state is not VerificationState.RUNNING:
+                raise RepositoryError("Verification attempt is no longer running.")
+            updated = attempt.model_copy(
+                update={
+                    "stage": stage,
+                    "updated_at": now,
+                    "lease_expires_at": now + _VERIFICATION_LEASE,
+                }
+            )
+            self._replace_verification_attempt(updated)
+            return updated
+
+    def finish_verification_attempt(
+        self,
+        attempt_id: str,
+        state: VerificationState,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> VerificationAttempt:
+        if state not in {VerificationState.SUCCEEDED, VerificationState.FAILED}:
+            raise ValueError("A verification attempt must finish succeeded or failed.")
+        now = utc_now()
+        with self._verification_lock:
+            self._reconcile_expired_verification(now)
+            attempt = self._verification_by_id(attempt_id)
+            if attempt.state is not VerificationState.RUNNING:
+                return attempt
+            updated = attempt.model_copy(
+                update={
+                    "state": state,
+                    "stage": VerificationStage.COMPLETE
+                    if state is VerificationState.SUCCEEDED
+                    else attempt.stage,
+                    "updated_at": now,
+                    "completed_at": now,
+                    "error": VerificationError(
+                        code=(error_code or "verification_failed")[:64],
+                        message=(
+                            error_message
+                            or "Webull verification could not be completed."
+                        )[:500],
+                    )
+                    if state is VerificationState.FAILED
+                    else None,
+                }
+            )
+            self._replace_verification_attempt(updated)
+            return updated
+
+    def _reconcile_expired_verification(self, now: datetime) -> None:
+        if not self.verification_attempts:
+            return
+        attempt = self.verification_attempts[-1]
+        if (
+            attempt.state is VerificationState.RUNNING
+            and attempt.lease_expires_at <= now
+        ):
+            self.verification_attempts[-1] = attempt.model_copy(
+                update={
+                    "state": VerificationState.TIMED_OUT,
+                    "updated_at": now,
+                    "completed_at": now,
+                    "error": VerificationError(
+                        code="verification_timeout",
+                        message="Verification timed out before completion.",
+                    ),
+                }
+            )
+
+    def _verification_by_id(self, attempt_id: str) -> VerificationAttempt:
+        attempt = next(
+            (
+                item
+                for item in reversed(self.verification_attempts)
+                if item.attempt_id == attempt_id
+            ),
+            None,
+        )
+        if attempt is None:
+            raise RepositoryError("Verification attempt was not found.")
+        return attempt
+
+    def _replace_verification_attempt(self, updated: VerificationAttempt) -> None:
+        for index, attempt in enumerate(self.verification_attempts):
+            if attempt.attempt_id == updated.attempt_id:
+                self.verification_attempts[index] = updated
+                return
+        raise RepositoryError("Verification attempt was not found.")
 
     def connect_accounts(self, accounts: list[BrokerageAccount]) -> ConnectionState:
         if not accounts:
@@ -758,6 +1050,31 @@ class MemoryRepository:
             ),
             reverse=True,
         )[:limit]
+
+
+def _verification_from_row(row: dict) -> VerificationAttempt:
+    error_code = row.get("error_code")
+    error_message = row.get("error_message")
+    error = (
+        VerificationError(
+            code=str(error_code or "verification_failed")[:64],
+            message=str(error_message or "Webull verification could not be completed.")[
+                :500
+            ],
+        )
+        if error_code or error_message
+        else None
+    )
+    return VerificationAttempt(
+        attempt_id=str(row["attempt_id"]),
+        state=VerificationState[str(row["state"]).upper()],
+        stage=VerificationStage[str(row["stage"]).upper()],
+        started_at=row["started_at"],
+        updated_at=row["updated_at"],
+        lease_expires_at=row["lease_expires_at"],
+        completed_at=row.get("completed_at"),
+        error=error,
+    )
 
 
 def _validate_snapshot(

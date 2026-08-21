@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import Event
 
@@ -107,6 +107,10 @@ def test_official_live_calls_require_read_only_scope_confirmation() -> None:
     assert scheduled.status_code == 503
     assert adapter.calls == []
 
+    status = client.get("/v1/status", headers=headers())
+    assert status.status_code == 200
+    assert status.json()["nextAction"] == "configure"
+
 
 def test_scheduled_sync_is_private_and_syncs_every_account() -> None:
     adapter = FakeWebullAdapter()
@@ -156,17 +160,18 @@ def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:
 
     disconnected = client.delete("/v1/connect", headers=headers())
     assert disconnected.status_code == 200
-    assert disconnected.json() == {
-        "connected": False,
-        "verificationInProgress": False,
-        "accounts": [],
-        "selectedAccountId": None,
-        "lastSyncedAt": None,
-        "dashboard": None,
-    }
+    disconnected_payload = disconnected.json()
+    assert disconnected_payload["connected"] is False
+    assert disconnected_payload["verificationInProgress"] is False
+    assert disconnected_payload["verification"]["state"] == "succeeded"
+    assert disconnected_payload["nextAction"] == "start_verification"
+    assert disconnected_payload["accounts"] == []
+    assert disconnected_payload["selectedAccountId"] is None
+    assert disconnected_payload["lastSyncedAt"] is None
+    assert disconnected_payload["dashboard"] is None
 
 
-def test_connect_is_idempotent_and_rejects_overlapping_verification() -> None:
+def test_connect_is_idempotent_and_returns_durable_overlapping_verification() -> None:
     class BlockingConnectAdapter(FakeWebullAdapter):
         def __init__(self) -> None:
             super().__init__()
@@ -192,13 +197,16 @@ def test_connect_is_idempotent_and_rejects_overlapping_verification() -> None:
             status = client.get("/v1/status", headers=headers())
             assert status.status_code == 200
             assert status.json()["verificationInProgress"] is True
+            attempt_id = status.json()["verification"]["attemptId"]
+            assert status.json()["verification"]["state"] == "running"
+            assert status.json()["verification"]["stage"] == "verifying_access"
+            assert status.json()["nextAction"] == "wait"
 
             duplicate = client.post("/v1/connect", headers=headers())
-            assert duplicate.status_code == 409
-            assert duplicate.json() == {
-                "detail": "Webull verification is already in progress."
-            }
-            assert duplicate.headers["retry-after"] == "5"
+            assert duplicate.status_code == 200
+            assert duplicate.json()["verificationInProgress"] is True
+            assert duplicate.json()["verification"]["attemptId"] == attempt_id
+            assert duplicate.json()["nextAction"] == "wait"
         finally:
             adapter.release.set()
 
@@ -206,6 +214,10 @@ def test_connect_is_idempotent_and_rejects_overlapping_verification() -> None:
 
     assert connected.status_code == 200, connected.text
     assert connected.json()["verificationInProgress"] is False
+    assert connected.json()["verification"]["state"] == "succeeded"
+    assert connected.json()["verification"]["stage"] == "complete"
+    assert connected.json()["verification"]["error"] is None
+    assert connected.json()["nextAction"] == "view_portfolio"
     broker_calls_after_first = tuple(
         call for call in adapter.calls if call != ("probe", "False")
     )
@@ -217,6 +229,79 @@ def test_connect_is_idempotent_and_rejects_overlapping_verification() -> None:
     assert tuple(call for call in adapter.calls if call != ("probe", "False")) == (
         broker_calls_after_first
     )
+
+
+def test_failed_verification_is_sanitized_and_retryable() -> None:
+    class UnexpectedFailureAdapter(FakeWebullAdapter):
+        def list_accounts(self):
+            raise RuntimeError("private-key-material-must-not-be-persisted")
+
+    repository = MemoryRepository()
+    client = TestClient(
+        create_app(
+            settings=settings(),
+            adapter=UnexpectedFailureAdapter(),
+            repository=repository,
+        ),
+        raise_server_exceptions=False,
+    )
+
+    failed = client.post("/v1/connect", headers=headers())
+    assert failed.status_code == 500
+
+    status = client.get("/v1/status", headers=headers())
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["connected"] is False
+    assert payload["verificationInProgress"] is False
+    assert payload["verification"]["state"] == "failed"
+    assert payload["verification"]["stage"] == "verifying_access"
+    assert payload["verification"]["error"] == {
+        "code": "verification_failed",
+        "message": "Webull verification could not be completed.",
+    }
+    assert "private-key-material" not in str(payload)
+    assert payload["nextAction"] == "retry_verification"
+
+
+def test_status_reconciles_an_expired_attempt_as_timed_out() -> None:
+    repository = MemoryRepository()
+    attempt, _ = repository.begin_verification_attempt()
+    repository.verification_attempts[-1] = attempt.model_copy(
+        update={"lease_expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    client = TestClient(
+        create_app(
+            settings=settings(),
+            adapter=FakeWebullAdapter(),
+            repository=repository,
+        )
+    )
+
+    status = client.get("/v1/status", headers=headers())
+
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["verificationInProgress"] is False
+    assert payload["verification"]["state"] == "timed_out"
+    assert payload["verification"]["error"]["code"] == "verification_timeout"
+    assert payload["nextAction"] == "retry_verification"
+
+
+def test_connected_account_without_snapshot_requests_sync() -> None:
+    adapter = FakeWebullAdapter()
+    repository = MemoryRepository()
+    repository.connect_accounts(adapter.list_accounts())
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=repository)
+    )
+
+    status = client.get("/v1/status", headers=headers())
+
+    assert status.status_code == 200
+    assert status.json()["connected"] is True
+    assert status.json()["dashboard"]["portfolio"] is None
+    assert status.json()["nextAction"] == "sync_account"
 
 
 def test_statement_anchor_accepts_normalized_totals_not_documents() -> None:

@@ -43,10 +43,15 @@ volume.
 Mount a private persistent Railway volume at `/data/webull-token` on the API
 service only and set its `WEBULL_OPENAPI_TOKEN_DIR=/data/webull-token`. The API
 service is the only service that receives Webull credentials or token-volume
-access. Webull's first approval can wait for in-app verification for up to five
-minutes; start it once with **Verify configured Webull account**, approve it in
-Webull, and wait for the request to finish. The saved token then survives API
-restarts.
+access. Until the permission gate is confirmed, the owner dashboard reports
+**Configuration required** and does not offer a misleading verification action.
+Webull's first approval can wait for in-app verification for up to five minutes.
+After the gate is enabled, start it once with **Verify configured Webull account**
+and approve it in Webull. The dashboard persists the attempt stage, start time,
+last update, terminal result, and next action in PostgreSQL, so the page may be
+closed and reopened without losing status. Repeated starts reuse the active
+attempt, and an interrupted attempt becomes retryable after its seven-minute
+lease expires. The saved Webull token then survives API restarts.
 
 Before that first request, confirm in Webull's developer console that the key is
 limited to Account Infos and Order Query/read permissions. Only then set
@@ -61,7 +66,8 @@ chat message.
 requires both `Authorization: Bearer <INTERNAL_API_TOKEN>` and
 `x-portfolio-owner-github-id`. JSON fields use camelCase.
 
-- `GET /v1/status`: accounts, `selectedAccountId`, `lastSyncedAt`, and dashboard.
+- `GET /v1/status`: accounts, `selectedAccountId`, `lastSyncedAt`, dashboard,
+  durable `verification` details, and an explicit `nextAction`.
 - `POST /v1/connect`, `DELETE /v1/connect`.
 - `POST /v1/accounts/select` with `{ "accountId": "..." }`.
 - `POST /v1/sync` and `POST /v1/backfill` with optional `accountId`.

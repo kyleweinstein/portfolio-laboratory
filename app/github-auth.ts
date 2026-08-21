@@ -314,13 +314,17 @@ export async function readGitHubSession(
 export function validateMutationRequest(
   request: Request,
   session: GitHubSession,
+  env: Environment = runtimeEnvironment(),
 ): { ok: true } | { ok: false; error: string } {
   const fetchSite = request.headers.get("sec-fetch-site");
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
     return { ok: false, error: "Cross-origin requests are not allowed." };
   }
 
-  const expectedOrigin = new URL(request.url).origin;
+  const expectedOrigin = mutationOrigin(request, env);
+  if (!expectedOrigin) {
+    return { ok: false, error: "The application origin is not configured." };
+  }
   const origin = request.headers.get("origin");
   const referer = request.headers.get("referer");
   let suppliedOrigin: string | null = null;
@@ -342,6 +346,23 @@ export function validateMutationRequest(
     return { ok: false, error: "The CSRF token is missing or invalid." };
   }
   return { ok: true };
+}
+
+function mutationOrigin(
+  request: Request,
+  env: Environment,
+): string | null {
+  // Railway terminates TLS before Vinext, so request.url can contain the
+  // service's internal HTTP address. The configured OAuth callback is the
+  // canonical public origin already bound to this owner-only session.
+  const configuredCallback = env.GITHUB_OAUTH_REDIRECT_URI?.trim();
+  try {
+    return configuredCallback
+      ? new URL(configuredCallback).origin
+      : new URL(request.url).origin;
+  } catch {
+    return null;
+  }
 }
 
 export function serializeSecureCookie(

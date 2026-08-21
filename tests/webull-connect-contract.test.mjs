@@ -27,7 +27,27 @@ test("OAuth returns to the Webull source and the URL preserves source selection"
 test("disconnected UI explains the approval wait and prevents duplicate verification", () => {
   assert.match(dashboard, /First-time Webull approval can take up to five minutes\./);
   assert.match(dashboard, /repeated starts are blocked/i);
-  assert.match(dashboard, /disabled=\{Boolean\(action\) \|\| Boolean\(status\.verificationInProgress\)\}/);
-  assert.match(dashboard, /You may leave this page[\s\S]*show the current status when you return\./i);
-  assert.match(dashboard, /status\?\.verificationInProgress[\s\S]*window\.setTimeout\(poll, 3_000\)/);
+  assert.match(dashboard, /disabled=\{Boolean\(action\) \|\| verificationInProgress \|\| status\.nextAction === "wait"\}/);
+  assert.match(dashboard, /You may leave this page[\s\S]*latest stage and result will be here when you return\./i);
+  assert.match(dashboard, /action !== "connect" && !verificationRunning[\s\S]*window\.setTimeout\(poll, 3_000\)/);
+  assert.match(dashboard, /VerificationStatusCard[\s\S]*Started[\s\S]*Last update[\s\S]*Completed/);
+  assert.match(dashboard, /nextAction === "connect"[\s\S]*await loadStatus\(undefined, true\)/);
+});
+
+test("configuration-required status cannot start verification", () => {
+  assert.match(dashboard, /status\?\.nextAction === "configure"[\s\S]*Configuration required/);
+  assert.match(dashboard, /Confirm the Webull key is limited to Account Infos and Order Query, then enable the private service gate\./);
+  assert.match(dashboard, /status\?\.nextAction === "configure"[\s\S]*\? "Configuration required"/);
+  const configureBranch = dashboard
+    .split('status?.nextAction === "configure" ? (')[1]
+    ?.split(') : status && !status.connected ? (')[0] || "";
+  assert.ok(configureBranch);
+  assert.doesNotMatch(configureBranch, /onClick=\{connect\}|Verify Webull connection/);
+});
+
+test("403 mutation failures remain action errors and status text stays encoding-safe", () => {
+  assert.match(dashboard, /if \(error\.status === 401\) return \{ kind: "unauthorized"/);
+  assert.doesNotMatch(dashboard, /error\.status === 401 \|\| error\.status === 403/);
+  assert.match(dashboard, /"Checking connection\.\.\."/);
+  assert.doesNotMatch(dashboard, /Checking connectionâ€¦/);
 });

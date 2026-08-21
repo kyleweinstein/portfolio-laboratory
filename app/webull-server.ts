@@ -27,6 +27,23 @@ type ServiceResult = {
   data: unknown;
 };
 
+type BrowserVerificationState = "running" | "succeeded" | "failed" | "timed_out";
+type BrowserVerificationStage = "starting" | "verifying_access" | "discovering_accounts" | "syncing_account" | "finalizing" | "complete";
+type BrowserNextAction = "sign_in" | "start_verification" | "wait" | "retry_verification" | "sync_account" | "view_portfolio" | "configure";
+
+type BrowserVerification = {
+  state: BrowserVerificationState;
+  stage: BrowserVerificationStage;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  error: { code: string; message: string } | null;
+};
+
+const BROWSER_VERIFICATION_STATES = new Set<BrowserVerificationState>(["running", "succeeded", "failed", "timed_out"]);
+const BROWSER_VERIFICATION_STAGES = new Set<BrowserVerificationStage>(["starting", "verifying_access", "discovering_accounts", "syncing_account", "finalizing", "complete"]);
+const BROWSER_NEXT_ACTIONS = new Set<BrowserNextAction>(["sign_in", "start_verification", "wait", "retry_verification", "sync_account", "view_portfolio", "configure"]);
+
 export type OwnerAccess =
   | { ok: true; session: GitHubSession }
   | { ok: false; response: Response };
@@ -39,6 +56,58 @@ export class RequestBodyError extends Error {
     this.name = "RequestBodyError";
     this.status = status;
   }
+}
+
+function safeTimestamp(value: unknown): string | null {
+  const candidate = nullableString(value);
+  if (!candidate || !Number.isFinite(Date.parse(candidate))) return null;
+  return candidate;
+}
+
+function normalizeServiceVerification(value: unknown): BrowserVerification | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const state = nullableString(record.state);
+  const stage = nullableString(record.stage);
+  const startedAt = safeTimestamp(record.startedAt);
+  const updatedAt = safeTimestamp(record.updatedAt);
+  if (!state || !BROWSER_VERIFICATION_STATES.has(state as BrowserVerificationState) ||
+      !stage || !BROWSER_VERIFICATION_STAGES.has(stage as BrowserVerificationStage) ||
+      !startedAt || !updatedAt) return null;
+
+  const errorRecord = asRecord(record.error);
+  const errorCode = nullableString(errorRecord?.code);
+  const errorMessage = nullableString(errorRecord?.message);
+  return {
+    state: state as BrowserVerificationState,
+    stage: stage as BrowserVerificationStage,
+    startedAt,
+    updatedAt,
+    completedAt: safeTimestamp(record.completedAt),
+    error: errorCode && errorMessage
+      ? { code: errorCode.slice(0, 80), message: errorMessage.slice(0, 300) }
+      : null,
+  };
+}
+
+function normalizeServiceNextAction(value: unknown): BrowserNextAction | null {
+  const candidate = nullableString(value);
+  return candidate && BROWSER_NEXT_ACTIONS.has(candidate as BrowserNextAction)
+    ? candidate as BrowserNextAction
+    : null;
+}
+
+function deriveAuthenticatedNextAction(
+  connected: boolean,
+  dashboard: unknown,
+  verification: BrowserVerification | null,
+): BrowserNextAction {
+  if (verification?.state === "running") return "wait";
+  if (connected) return dashboard ? "view_portfolio" : "sync_account";
+  if (verification?.state === "failed" || verification?.state === "timed_out") {
+    return "retry_verification";
+  }
+  return "start_verification";
 }
 
 class WebullServiceConfigurationError extends Error {
@@ -85,7 +154,7 @@ export async function authorizeWebullOwner(
   }
 
   if (options.mutation) {
-    const validation = validateMutationRequest(request, session);
+    const validation = validateMutationRequest(request, session, env);
     if (!validation.ok) {
       return {
         ok: false,
@@ -101,11 +170,14 @@ export async function webullStatusResponse(
   request: Request,
   env: Environment = runtimeEnvironment(),
 ): Promise<Response> {
+  const enabled = isWebullIntegrationEnabled(env);
   const base = {
-    enabled: isWebullIntegrationEnabled(env),
+    enabled,
     authenticated: false,
     connected: false,
     verificationInProgress: false,
+    verification: null as BrowserVerification | null,
+    nextAction: (enabled ? "sign_in" : "configure") as BrowserNextAction,
     accounts: [] as unknown[],
     selectedAccountId: null as string | null,
     dashboard: null as unknown,
@@ -118,6 +190,7 @@ export async function webullStatusResponse(
   const authenticatedBase = {
     ...base,
     authenticated: true,
+    nextAction: "start_verification" as BrowserNextAction,
     csrfToken: session.csrfToken,
   };
 
@@ -188,11 +261,19 @@ export async function webullStatusResponse(
     benchmarkSymbol,
     benchmarkSeries,
   );
+  const verification = normalizeServiceVerification(status?.verification);
+  const verificationInProgress = verification
+    ? verification.state === "running"
+    : status?.verificationInProgress === true;
+  const nextAction = normalizeServiceNextAction(status?.nextAction)
+    ?? deriveAuthenticatedNextAction(connected, dashboard, verification);
 
   return jsonResponse({
     ...authenticatedBase,
     connected,
-    verificationInProgress: status?.verificationInProgress === true,
+    verificationInProgress,
+    verification,
+    nextAction,
     accounts: accounts ?? [],
     selectedAccountId: nullableString(status?.selectedAccountId),
     dashboard,

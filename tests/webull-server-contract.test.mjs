@@ -90,6 +90,75 @@ test("no performance history stays explicitly partial and unavailable", () => {
   assert.deepEqual(dashboard.chart, []);
 });
 
+test("authenticated status forwards only a validated verification attempt and next action", async () => {
+  const env = {
+    WEBULL_INTEGRATION_ENABLED: "true",
+    WEBULL_SERVICE_URL: "https://webull.internal/",
+    WEBULL_INTERNAL_TOKEN: "test-internal-token-long-enough",
+    GITHUB_CLIENT_ID: "client-id",
+    GITHUB_CLIENT_SECRET: "client-secret",
+    GITHUB_SESSION_SECRET: "test-session-secret-that-is-longer-than-thirty-two-bytes",
+    GITHUB_OWNER_IDS: "12345",
+  };
+  const { cookieValue } = await createGitHubSession(
+    { id: "12345", login: "portfolio-owner" },
+    getGitHubAuthConfig(env),
+  );
+  const request = new Request("https://portfolio.example/api/webull/status", {
+    headers: { cookie: `${GITHUB_SESSION_COOKIE}=${cookieValue}` },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    connected: false,
+    verificationInProgress: true,
+    verification: {
+      state: "running",
+      stage: "verifying_access",
+      startedAt: "2026-08-20T20:00:00Z",
+      updatedAt: "2026-08-20T20:04:00Z",
+      completedAt: null,
+      error: null,
+    },
+    nextAction: "wait",
+    accounts: [],
+    selectedAccountId: null,
+    lastSyncedAt: null,
+    dashboard: null,
+  });
+
+  try {
+    const response = await webullStatusResponse(request, env);
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(status.verificationInProgress, true);
+    assert.equal(status.verification.state, "running");
+    assert.equal(status.verification.stage, "verifying_access");
+    assert.equal(status.verification.startedAt, "2026-08-20T20:00:00Z");
+    assert.equal(status.nextAction, "wait");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("signed-out status exposes only the sign-in action and no private attempt", async () => {
+  const response = await webullStatusResponse(
+    new Request("https://portfolio.example/api/webull/status"),
+    { WEBULL_INTEGRATION_ENABLED: "true" },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    enabled: true,
+    authenticated: false,
+    connected: false,
+    verificationInProgress: false,
+    verification: null,
+    nextAction: "sign_in",
+    accounts: [],
+    selectedAccountId: null,
+    dashboard: null,
+  });
+});
+
 test("status transport failures stay errors and preserve safe FastAPI details", async () => {
   const env = {
     WEBULL_INTEGRATION_ENABLED: "true",
@@ -121,6 +190,8 @@ test("status transport failures stay errors and preserve safe FastAPI details", 
       authenticated: true,
       connected: false,
       verificationInProgress: false,
+      verification: null,
+      nextAction: "start_verification",
       accounts: [],
       selectedAccountId: null,
       dashboard: null,
