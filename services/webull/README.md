@@ -15,6 +15,10 @@ runtime token directory. Never commit them.
 - `WEBULL_APP_KEY` and `WEBULL_APP_SECRET`: approved Webull OpenAPI credentials.
 - `WEBULL_OPENAPI_TOKEN_DIR`: mounted directory used by the official SDK for its
   verified access token.
+- `WEBULL_READ_ONLY_SCOPE_CONFIRMED`: activation gate. Set to `true` only after
+  the Webull approval/key permissions have been verified to exclude order
+  placement, replacement and cancellation. The application imports no trading
+  methods, but the official SDK client itself contains them.
 - `WEBULL_REGION` (default `us`) and `WEBULL_API_ENDPOINT` (default
   `api.webull.com`).
 - `CASH_ACTIVITY_LOOKBACK_DAYS` (default `45`), `SYNC_INTERVAL_SECONDS`
@@ -26,6 +30,21 @@ Run the API with `python -m webull_service.serve`. Run one scheduled cycle with
 one-shot command every 15 minutes; it safely no-ops until credentials exist and
 outside 9:30 a.m.-4:20 p.m. U.S. Eastern on weekdays. Manual API sync remains
 available at any time.
+
+## First connection and token persistence
+
+Mount a private persistent Railway volume at `/data/webull-token` and set
+`WEBULL_OPENAPI_TOKEN_DIR=/data/webull-token` on both the API and scheduler.
+Webull's first approval can wait for in-app verification for up to five minutes;
+start it once with **Verify configured Webull account**, approve it in Webull,
+and wait for the request to finish. The saved token then survives restarts.
+
+Before that first request, confirm in Webull's developer console that the key is
+limited to Account Infos and Order Query/read permissions. Only then set
+`WEBULL_READ_ONLY_SCOPE_CONFIRMED=true`. If Webull cannot scope the credential to
+exclude trading, leave the flag false and keep the connected feature disabled.
+Never paste the App Key, Secret or token into a browser form, repository, log or
+chat message.
 
 ## Proxy contract
 

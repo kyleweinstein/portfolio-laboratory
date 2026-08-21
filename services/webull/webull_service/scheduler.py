@@ -66,11 +66,20 @@ def main() -> None:
     )
     args = parser.parse_args()
     settings = Settings.from_env()
-    if not settings.database_configured or not settings.webull_credentials_configured:
-        print("Webull scheduled sync is disabled until its private configuration is complete.")
+    if (
+        not settings.database_configured
+        or not settings.webull_credentials_configured
+        or not settings.webull_read_only_scope_confirmed
+    ):
+        print(
+            "Webull scheduled sync is disabled until its private configuration "
+            "and read-only scope confirmation are complete."
+        )
         return
     if not args.loop and not is_scheduled_sync_window():
-        print("Webull scheduled sync skipped outside the configured market-hours window.")
+        print(
+            "Webull scheduled sync skipped outside the configured market-hours window."
+        )
         return
     if settings.auto_migrate:
         run_migrations(settings.database_url)

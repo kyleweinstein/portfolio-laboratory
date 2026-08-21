@@ -275,6 +275,7 @@ class HealthReport(NormalizedModel):
     service: str = "portfolio-lab-webull"
     database_configured: bool
     webull_credentials_configured: bool
+    webull_read_only_scope_confirmed: bool
     authentication_configured: bool
 
 

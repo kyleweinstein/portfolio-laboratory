@@ -84,9 +84,7 @@ def test_statement_anchor_keeps_backfilled_performance_estimated() -> None:
     report = calculate_performance(
         "account",
         [
-            ValuationPoint(
-                at=start, value=Decimal(100), source="statement_anchor"
-            ),
+            ValuationPoint(at=start, value=Decimal(100), source="statement_anchor"),
             ValuationPoint(at=start + timedelta(days=1), value=Decimal(101)),
         ],
         [],

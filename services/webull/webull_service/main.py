@@ -135,7 +135,14 @@ def create_app(
             database_configured=runtime_settings.database_configured,
             webull_credentials_configured=runtime_settings.webull_credentials_configured
             or runtime_settings.adapter_kind == "fake",
-            authentication_configured=bool(runtime_settings.internal_api_token),
+            webull_read_only_scope_confirmed=(
+                runtime_settings.webull_read_only_scope_confirmed
+                or runtime_settings.adapter_kind == "fake"
+            ),
+            authentication_configured=bool(
+                runtime_settings.internal_api_token
+                and runtime_settings.portfolio_owner_github_id
+            ),
         )
 
     def require_internal_access(
@@ -166,13 +173,31 @@ def create_app(
                 status_code=403, detail="x-portfolio-owner-github-id is required."
             )
         expected_owner = runtime_settings.portfolio_owner_github_id
-        if expected_owner and not hmac.compare_digest(owner_github_id, expected_owner):
+        if not expected_owner:
+            raise HTTPException(
+                status_code=503,
+                detail="PORTFOLIO_OWNER_GITHUB_ID is not configured.",
+            )
+        if not hmac.compare_digest(owner_github_id, expected_owner):
             raise HTTPException(
                 status_code=403, detail="Portfolio owner does not match this service."
             )
         return owner_github_id
 
     router = APIRouter(prefix="/v1", dependencies=[Depends(require_internal_access)])
+
+    def require_read_only_scope_confirmation() -> None:
+        if (
+            runtime_settings.adapter_kind == "official"
+            and not runtime_settings.webull_read_only_scope_confirmed
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "WEBULL_READ_ONLY_SCOPE_CONFIRMED must be true before live "
+                    "Webull access is enabled."
+                ),
+            )
 
     def selected_account(requested: str | None = None) -> str:
         if requested:
@@ -286,6 +311,8 @@ def create_app(
 
     @router.get("/capabilities", response_model=CapabilityReport)
     def capabilities(live: bool = Query(default=False)) -> CapabilityReport:
+        if live:
+            require_read_only_scope_confirmation()
         return runtime_adapter.probe(live=live)
 
     @router.get("/status", response_model=ServiceStatus)
@@ -298,6 +325,7 @@ def create_app(
 
     @router.post("/connect", response_model=ServiceStatus)
     def connect() -> ServiceStatus:
+        require_read_only_scope_confirmation()
         sync_service.connect(sync_selected=True)
         return status_response()
 
@@ -313,11 +341,13 @@ def create_app(
 
     @router.post("/sync", response_model=SyncResult)
     def sync(payload: AccountTarget | None = None) -> SyncResult:
+        require_read_only_scope_confirmation()
         account_id = selected_account(payload.account_id if payload else None)
         return sync_service.sync_account(account_id)
 
     @router.post("/backfill", response_model=BackfillResult)
     def backfill(payload: BackfillRequest | None = None) -> BackfillResult:
+        require_read_only_scope_confirmation()
         request = payload or BackfillRequest()
         account_id = selected_account(request.account_id)
         return sync_service.backfill(account_id, days=request.days)

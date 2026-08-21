@@ -10,6 +10,7 @@ export async function POST(request: Request) {
   const response = await proxyWebullJson("/connect", access.session, {
     method: "POST",
     body: {},
+    timeoutMs: 330_000,
   });
   return response.ok ? webullStatusResponse(request) : response;
 }

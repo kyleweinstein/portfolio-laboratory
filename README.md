@@ -51,7 +51,8 @@ This is an educational analytics tool, not investment, tax, accounting, or legal
 
 ## Owner-only Webull connection
 
-The Railway deployment can add a private, read-only Webull account view while
+The Railway deployment can add a private, application-level read-only Webull
+account view while
 leaving every manual portfolio feature public. The browser talks only to
 authenticated Vinext routes. Those routes proxy a private FastAPI service backed
 by PostgreSQL; Webull credentials, access tokens, and full account payloads never
@@ -72,7 +73,9 @@ The connected view preserves source boundaries:
 
 The feature is off unless `WEBULL_INTEGRATION_ENABLED=true`. Activation also
 requires a GitHub OAuth app, an allowlisted numeric owner ID, a private internal
-token, Railway Postgres, and the approved Webull App Key/Secret. See
+token, Railway Postgres, the approved Webull App Key/Secret, a persistent SDK
+token volume, and confirmation that the broker credential excludes trading
+permissions. See
 [`services/webull/README.md`](services/webull/README.md) and the checked-in
 `.env.example` files for the complete runtime contract. No trading methods are
 implemented.
