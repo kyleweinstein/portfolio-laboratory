@@ -48,3 +48,31 @@ Rebalancing can add, reduce, or have no effect on return. Its outcome depends on
 ## Intended use
 
 This is an educational analytics tool, not investment, tax, accounting, or legal advice. Verify source data and methodology with a qualified provider before making financial decisions.
+
+## Owner-only Webull connection
+
+The Railway deployment can add a private, read-only Webull account view while
+leaving every manual portfolio feature public. The browser talks only to
+authenticated Vinext routes. Those routes proxy a private FastAPI service backed
+by PostgreSQL; Webull credentials, access tokens, and full account payloads never
+enter the browser bundle or repository.
+
+The connected view preserves source boundaries:
+
+- Current net liquidation value, cash, market value, day P&L, positions, basis,
+  and unrealized P&L are displayed as Webull-reported values.
+- Historical returns are Portfolio Lab calculations from atomic post-close Webull
+  snapshots and external cash activities. They are labeled estimated until the
+  period has complete, reconciled coverage.
+- Orders are never interpreted as deposits or withdrawals. Cash, options, crypto,
+  shorts, and other unsupported assets remain in account value but are listed as
+  excluded from the long-only analytics sleeve.
+- `Analyze current holdings` copies only eligible positive stocks and ETFs into
+  the editable manual draft and never starts analysis automatically.
+
+The feature is off unless `WEBULL_INTEGRATION_ENABLED=true`. Activation also
+requires a GitHub OAuth app, an allowlisted numeric owner ID, a private internal
+token, Railway Postgres, and the approved Webull App Key/Secret. See
+[`services/webull/README.md`](services/webull/README.md) and the checked-in
+`.env.example` files for the complete runtime contract. No trading methods are
+implemented.

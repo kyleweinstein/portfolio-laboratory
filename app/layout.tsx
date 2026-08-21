@@ -16,13 +16,13 @@ export async function generateMetadata(): Promise<Metadata> {
       title: "Portfolio Laboratory",
       description: "Risk, correlation & allocation — made legible.",
       type: "website",
-      images: [{ url: "/og.png", width: 1744, height: 909, alt: "Portfolio Laboratory dashboard preview" }],
+      images: [{ url: "/og-portfolio-lab.png", width: 1731, height: 909, alt: "The Seer's Portfolio Lab analytics preview" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "Portfolio Laboratory",
       description: "Risk, correlation & allocation — made legible.",
-      images: ["/og.png"],
+      images: ["/og-portfolio-lab.png"],
     },
   };
 }

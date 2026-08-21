@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import DiversificationMap from "./diversification-map";
 import { parsePortfolioCsv } from "./portfolio-csv";
+import WebullDashboard from "./webull-dashboard";
+import type { WebullSource } from "./webull-client";
 import {
   ALL_PROXY_SYMBOLS,
   FACTOR_OPTIONS,
@@ -80,6 +82,7 @@ function snapshotKey(holdings: Holding[], benchmark: string, years: number, risk
 
 function App() {
   const [holdings, setHoldings] = useState<Holding[]>(DEFAULT_HOLDINGS);
+  const [portfolioSource, setPortfolioSource] = useState<WebullSource>("manual");
   const [benchmark, setBenchmark] = useState("SPY");
   const [years, setYears] = useState(3);
   const [riskFreeRate, setRiskFreeRate] = useState(.04);
@@ -329,6 +332,20 @@ function App() {
     });
   }
 
+  function useWebullHoldings(nextHoldings: Holding[]) {
+    if (!nextHoldings.length) {
+      setImportNotice({ type: "error", message: "Webull did not return any eligible long-only stock or ETF positions." });
+      return;
+    }
+    setHoldings(nextHoldings);
+    setOptimized(null);
+    setPortfolioSource("manual");
+    setImportNotice({
+      type: "success",
+      message: `${nextHoldings.length} eligible Webull holding${nextHoldings.length === 1 ? "" : "s"} copied into the draft. Select Analyze portfolio when you are ready.`,
+    });
+  }
+
   const chartSeries: ChartSeries[] = analysis ? effectiveSelectedSeries.flatMap(name => {
     if (name === "Portfolio") return [{ name, returns: analysis.portfolioReturns, color: "#111111" }];
     const index = analysis.symbols.indexOf(name);
@@ -351,9 +368,12 @@ function App() {
   return <main>
     <header>
       <div><span className="eyebrow">THE SEER&apos;S</span><h1>PORTFOLIO LAB</h1><p>Design, stress-check, pair, and rebalance a long-only portfolio using adjusted daily closes.</p></div>
-      <div className="masthead-action"><button className="primary" onClick={analyze} disabled={busy}>{analyzeLabel}</button>{dirty && <span className="stale-badge">Changes not analyzed</span>}</div>
+      {portfolioSource === "manual" && <div className="masthead-action"><button className="primary" onClick={analyze} disabled={busy}>{analyzeLabel}</button>{dirty && <span className="stale-badge">Changes not analyzed</span>}</div>}
     </header>
 
+    <WebullDashboard source={portfolioSource} onSourceChange={setPortfolioSource} onAnalyzeCurrentHoldings={useWebullHoldings}/>
+
+    {portfolioSource === "manual" && <>
     <section className="control card"><div className="controls">
       <label>History<select value={years} onChange={event => { setYears(+event.target.value); setOptimized(null); }}><option value={1}>1 year</option><option value={3}>3 years</option><option value={5}>5 years</option></select></label>
       <label>Benchmark<input value={benchmark} onChange={event => { setBenchmark(event.target.value.toUpperCase()); setOptimized(null); }} maxLength={12}/></label>
@@ -433,6 +453,7 @@ function App() {
       <section className="card"><div className="section-title"><div><span className="eyebrow">Holding-level risk</span><h2>Comparable statistics</h2></div><span className="pill">25 rows per page</span></div><div className="table-tools"><label>Find holding<input value={riskSearch} onChange={event => { setRiskSearch(event.target.value.toUpperCase()); setRiskPage(0); }} placeholder="Ticker"/></label><span>{riskIndices.length} results</span></div><div className="table-wrap"><table><thead><tr><th>Holding</th><th>Weight</th><th>Drifted</th><th>Ann. return</th><th>Volatility</th><th>Sharpe</th><th>Max drawdown</th><th>VaR 95%</th><th>Beta</th></tr></thead><tbody>{visibleRisk.map(({ symbol, index }) => { const stats = analysis.holdings[index]; return <tr key={symbol}><td><i style={{ background: COLORS[index % COLORS.length] }}/> {symbol}</td><td>{pct(analysis.targetWeights[index])}</td><td>{pct(analysis.driftedWeights[index])}</td><td>{pct(stats.annualReturn)}</td><td>{pct(stats.volatility)}</td><td>{num(stats.sharpe)}</td><td>{pct(stats.maxDrawdown)}</td><td>{pct(stats.var95)}</td><td>{num(stats.beta!)}</td></tr>; })}</tbody></table></div><Pagination page={riskPage} pages={riskPages} onPage={setRiskPage}/></section>
 
       <section className="method"><div><span className="eyebrow">Methodology</span><h2>Pairing and rebalance logic</h2><p>Returns are aligned daily log changes in adjusted close. Pair rankings use Pearson correlation and annualized spread volatility. The packed correlation matrix is computed once from standardized return vectors and reused by every dependent view.</p></div><div><span className="eyebrow">Important limitations</span><h2>Volatility harvesting is not guaranteed</h2><p>Rebalancing can add, reduce, or have no effect on return. Any benefit depends on recurring relative movement, mean reversion, thresholds, costs, taxes, and future correlations.</p></div></section>
+    </>}
     </>}
     <footer>Educational analytics only — not investment, tax, or legal advice. Verify prices, assumptions, and rebalance instructions before trading.</footer>
   </main>;
