@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import hmac
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
-from threading import Lock
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
@@ -29,9 +28,13 @@ from .models import (
     NormalizedModel,
     OrderRecord,
     PortfolioState,
+    ServiceNextAction,
     ServiceStatus,
     StatementAnchor,
     SyncResult,
+    VerificationAttempt,
+    VerificationStage,
+    VerificationState,
     utc_now,
 )
 from .performance import calculate_performance
@@ -94,7 +97,6 @@ def create_app(
         runtime_repository,
         cash_activity_lookback_days=runtime_settings.cash_activity_lookback_days,
     )
-    verification_lock = Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -271,12 +273,50 @@ def create_app(
             )
         return tuple(issues)
 
+    def next_action_for(
+        *,
+        connected: bool,
+        verification: VerificationAttempt | None,
+        portfolio: PortfolioState | None,
+    ) -> ServiceNextAction:
+        if (
+            runtime_settings.adapter_kind == "official"
+            and not runtime_settings.webull_read_only_scope_confirmed
+        ):
+            return ServiceNextAction.CONFIGURE
+        if verification and verification.state is VerificationState.RUNNING:
+            return ServiceNextAction.WAIT
+        if (
+            not connected
+            and verification
+            and verification.state
+            in {VerificationState.FAILED, VerificationState.TIMED_OUT}
+        ):
+            return ServiceNextAction.RETRY_VERIFICATION
+        if connected:
+            return (
+                ServiceNextAction.VIEW_PORTFOLIO
+                if portfolio is not None
+                else ServiceNextAction.SYNC_ACCOUNT
+            )
+        return ServiceNextAction.START_VERIFICATION
+
     def status_response() -> ServiceStatus:
         state = runtime_repository.get_connection_state()
+        verification = runtime_repository.get_verification_attempt()
+        verification_in_progress = bool(
+            verification and verification.state is VerificationState.RUNNING
+        )
         if not state.connected or not state.selected_account_id:
             return ServiceStatus(
                 connected=state.connected,
-                verification_in_progress=verification_lock.locked(),
+                verification_in_progress=verification_in_progress,
+                verification=verification,
+                next_action=next_action_for(
+                    connected=state.connected,
+                    verification=verification,
+                    portfolio=None,
+                ),
                 accounts=state.accounts,
                 selected_account_id=state.selected_account_id,
                 last_synced_at=state.last_synced_at,
@@ -301,7 +341,13 @@ def create_app(
         )
         return ServiceStatus(
             connected=True,
-            verification_in_progress=verification_lock.locked(),
+            verification_in_progress=verification_in_progress,
+            verification=verification,
+            next_action=next_action_for(
+                connected=True,
+                verification=verification,
+                portfolio=portfolio,
+            ),
             accounts=state.accounts,
             selected_account_id=account_id,
             last_synced_at=state.last_synced_at,
@@ -332,17 +378,44 @@ def create_app(
         if runtime_repository.get_connection_state().connected:
             return status_response()
         require_read_only_scope_confirmation()
-        if not verification_lock.acquire(blocking=False):
-            raise HTTPException(
-                status_code=409,
-                detail="Webull verification is already in progress.",
-                headers={"Retry-After": "5"},
-            )
+        attempt, created = runtime_repository.begin_verification_attempt()
+        if not created:
+            return status_response()
         try:
-            if not runtime_repository.get_connection_state().connected:
-                sync_service.connect(sync_selected=True)
-        finally:
-            verification_lock.release()
+            runtime_repository.advance_verification_attempt(
+                attempt.attempt_id, VerificationStage.VERIFYING_ACCESS
+            )
+            accounts = runtime_adapter.list_accounts()
+            runtime_repository.advance_verification_attempt(
+                attempt.attempt_id, VerificationStage.DISCOVERING_ACCOUNTS
+            )
+            state = runtime_repository.connect_accounts(accounts)
+            if state.selected_account_id:
+                runtime_repository.advance_verification_attempt(
+                    attempt.attempt_id, VerificationStage.SYNCING_ACCOUNT
+                )
+                sync_service.sync_account(state.selected_account_id, accounts=accounts)
+            runtime_repository.advance_verification_attempt(
+                attempt.attempt_id, VerificationStage.FINALIZING
+            )
+            runtime_repository.finish_verification_attempt(
+                attempt.attempt_id, VerificationState.SUCCEEDED
+            )
+        except Exception as exc:
+            if isinstance(exc, WebullAdapterError):
+                error_code = "webull_access_failed"
+                error_message = str(exc)[:500]
+            else:
+                error_code = "verification_failed"
+                error_message = "Webull verification could not be completed."
+            with suppress(Exception):
+                runtime_repository.finish_verification_attempt(
+                    attempt.attempt_id,
+                    VerificationState.FAILED,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+            raise
         return status_response()
 
     @router.delete("/connect", response_model=ServiceStatus)

@@ -16,6 +16,15 @@ test("Webull status normalizes wrapped responses without inventing connection st
         authenticated: true,
         connected: true,
         verificationInProgress: true,
+        verification: {
+          state: "running",
+          stage: "verifying_access",
+          startedAt: "2026-08-20T20:00:00Z",
+          updatedAt: "2026-08-20T20:04:00Z",
+          completedAt: null,
+          error: null,
+        },
+        nextAction: "wait",
         csrfToken: "csrf-token-for-test-only-1234567890",
         accounts: [{ id: "acct-1", label: "Individual", last4: "1234", currency: "USD" }],
         selectedAccountId: "acct-1",
@@ -26,9 +35,56 @@ test("Webull status normalizes wrapped responses without inventing connection st
 
   assert.equal(status.connected, true);
   assert.equal(status.verificationInProgress, true);
+  assert.equal(status.verification?.stage, "verifying_access");
+  assert.equal(status.verification?.startedAt, "2026-08-20T20:00:00Z");
+  assert.equal(status.nextAction, "wait");
   assert.equal(status.accounts[0].accountId, "acct-1");
   assert.match(status.accounts[0].maskedIdentifier, /1234$/);
   assert.equal(status.dashboard?.quality, "verified");
+});
+
+test("Webull status rejects unknown verification values and never exposes attempts while signed out", () => {
+  const invalid = normalizeWebullStatus({
+    enabled: true,
+    authenticated: true,
+    connected: false,
+    verificationInProgress: false,
+    verification: {
+      state: "pending",
+      stage: "guessing",
+      startedAt: "yesterday",
+      updatedAt: "eventually",
+      completedAt: null,
+      error: { code: "UPSTREAM", message: "Do not trust this malformed record." },
+    },
+    nextAction: "open_trading",
+    accounts: [],
+    selectedAccountId: null,
+    dashboard: null,
+  });
+  assert.equal(invalid.verification, null);
+  assert.equal(invalid.nextAction, "start_verification");
+
+  const signedOut = normalizeWebullStatus({
+    enabled: true,
+    authenticated: false,
+    connected: false,
+    verificationInProgress: false,
+    verification: {
+      state: "failed",
+      stage: "verifying_access",
+      startedAt: "2026-08-20T20:00:00Z",
+      updatedAt: "2026-08-20T20:05:00Z",
+      completedAt: "2026-08-20T20:05:00Z",
+      error: { code: "PRIVATE", message: "Private server detail" },
+    },
+    nextAction: "retry_verification",
+    accounts: [],
+    selectedAccountId: null,
+    dashboard: null,
+  });
+  assert.equal(signedOut.verification, null);
+  assert.equal(signedOut.nextAction, "sign_in");
 });
 
 test("eligible Webull positions create one normalized long-only analytics sleeve", () => {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -203,6 +204,52 @@ class ConnectionState(NormalizedModel):
     last_synced_at: datetime | None = None
 
 
+class VerificationState(str, Enum):
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
+class VerificationStage(str, Enum):
+    STARTING = "starting"
+    VERIFYING_ACCESS = "verifying_access"
+    DISCOVERING_ACCOUNTS = "discovering_accounts"
+    SYNCING_ACCOUNT = "syncing_account"
+    FINALIZING = "finalizing"
+    COMPLETE = "complete"
+
+
+class VerificationError(NormalizedModel):
+    code: str = Field(max_length=64)
+    message: str = Field(max_length=500)
+
+
+class VerificationAttempt(NormalizedModel):
+    attempt_id: str
+    state: VerificationState
+    stage: VerificationStage
+    started_at: datetime
+    updated_at: datetime
+    lease_expires_at: datetime
+    completed_at: datetime | None = None
+    error: VerificationError | None = None
+
+    @field_validator("started_at", "updated_at", "lease_expires_at", "completed_at")
+    @classmethod
+    def normalize_verification_time(cls, value: datetime | None) -> datetime | None:
+        return ensure_utc(value) if value is not None else None
+
+
+class ServiceNextAction(str, Enum):
+    CONFIGURE = "configure"
+    START_VERIFICATION = "start_verification"
+    WAIT = "wait"
+    RETRY_VERIFICATION = "retry_verification"
+    SYNC_ACCOUNT = "sync_account"
+    VIEW_PORTFOLIO = "view_portfolio"
+
+
 class DataIssue(NormalizedModel):
     code: str
     severity: str
@@ -253,6 +300,8 @@ class DashboardState(NormalizedModel):
 class ServiceStatus(NormalizedModel):
     connected: bool
     verification_in_progress: bool = False
+    verification: VerificationAttempt | None = None
+    next_action: ServiceNextAction = ServiceNextAction.START_VERIFICATION
     accounts: tuple[BrokerageAccount, ...]
     selected_account_id: str | None
     last_synced_at: datetime | None

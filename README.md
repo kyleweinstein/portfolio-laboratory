@@ -79,3 +79,9 @@ permissions. See
 [`services/webull/README.md`](services/webull/README.md) and the checked-in
 `.env.example` files for the complete runtime contract. No trading methods are
 implemented.
+
+The owner dashboard exposes a durable verification record rather than a
+transient spinner. It reports the current stage, timestamps, terminal error or
+success, and the exact next action after reloads, service restarts, or duplicate
+clicks. Broker access remains unavailable—and the Verify action remains
+hidden—until the private read-only permission gate is explicitly confirmed.

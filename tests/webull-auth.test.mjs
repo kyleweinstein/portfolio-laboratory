@@ -90,6 +90,38 @@ test("mutation guard requires exact same origin and the session CSRF token", asy
   });
   assert.deepEqual(validateMutationRequest(valid, session), { ok: true });
 
+  const proxied = new Request("http://0.0.0.0:8080/api/webull/sync", {
+    method: "POST",
+    headers: {
+      origin: "https://portfolio.example",
+      "sec-fetch-site": "same-origin",
+      [GITHUB_CSRF_HEADER]: session.csrfToken,
+    },
+  });
+  assert.deepEqual(
+    validateMutationRequest(proxied, session, {
+      GITHUB_OAUTH_REDIRECT_URI:
+        "https://portfolio.example/api/webull/auth/callback",
+    }),
+    { ok: true },
+  );
+
+  const spoofedProxyOrigin = new Request(proxied.url, {
+    method: "POST",
+    headers: {
+      origin: "http://0.0.0.0:8080",
+      "sec-fetch-site": "same-origin",
+      [GITHUB_CSRF_HEADER]: session.csrfToken,
+    },
+  });
+  assert.equal(
+    validateMutationRequest(spoofedProxyOrigin, session, {
+      GITHUB_OAUTH_REDIRECT_URI:
+        "https://portfolio.example/api/webull/auth/callback",
+    }).ok,
+    false,
+  );
+
   const crossOrigin = new Request(valid.url, {
     method: "POST",
     headers: {

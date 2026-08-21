@@ -112,11 +112,26 @@ export type WebullDashboardData = WebullProvenance & {
   issues?: WebullIssue[] | null;
 };
 
+export type WebullVerificationState = "running" | "succeeded" | "failed" | "timed_out";
+export type WebullVerificationStage = "starting" | "verifying_access" | "discovering_accounts" | "syncing_account" | "finalizing" | "complete";
+export type WebullNextAction = "sign_in" | "start_verification" | "wait" | "retry_verification" | "sync_account" | "view_portfolio" | "configure";
+
+export type WebullVerification = {
+  state: WebullVerificationState;
+  stage: WebullVerificationStage;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  error: { code: string; message: string } | null;
+};
+
 export type WebullStatus = {
   enabled: boolean;
   authenticated: boolean;
   connected: boolean;
   verificationInProgress: boolean;
+  verification: WebullVerification | null;
+  nextAction: WebullNextAction;
   csrfToken?: string | null;
   accounts: WebullAccount[];
   selectedAccountId: string | null;
@@ -169,6 +184,48 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+const VERIFICATION_STATES = new Set<WebullVerificationState>(["running", "succeeded", "failed", "timed_out"]);
+const VERIFICATION_STAGES = new Set<WebullVerificationStage>(["starting", "verifying_access", "discovering_accounts", "syncing_account", "finalizing", "complete"]);
+const NEXT_ACTIONS = new Set<WebullNextAction>(["sign_in", "start_verification", "wait", "retry_verification", "sync_account", "view_portfolio", "configure"]);
+
+function timestampValue(value: unknown): string | null {
+  const timestamp = textValue(value);
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) return null;
+  return timestamp;
+}
+
+function verificationFrom(value: unknown): WebullVerification | null {
+  if (!isRecord(value)) return null;
+  const state = textValue(value.state);
+  const stage = textValue(value.stage);
+  const startedAt = timestampValue(value.startedAt);
+  const updatedAt = timestampValue(value.updatedAt);
+  if (!state || !VERIFICATION_STATES.has(state as WebullVerificationState) ||
+      !stage || !VERIFICATION_STAGES.has(stage as WebullVerificationStage) ||
+      !startedAt || !updatedAt) return null;
+
+  const errorValue = isRecord(value.error) ? value.error : null;
+  const errorCode = errorValue ? textValue(errorValue.code) : null;
+  const errorMessage = errorValue ? textValue(errorValue.message) : null;
+  return {
+    state: state as WebullVerificationState,
+    stage: stage as WebullVerificationStage,
+    startedAt,
+    updatedAt,
+    completedAt: timestampValue(value.completedAt),
+    error: errorCode && errorMessage ? { code: errorCode.slice(0, 80), message: errorMessage.slice(0, 300) } : null,
+  };
+}
+
+function fallbackNextAction(enabled: boolean, authenticated: boolean, connected: boolean, dashboard: WebullDashboardData | null, verification: WebullVerification | null): WebullNextAction {
+  if (!enabled) return "configure";
+  if (!authenticated) return "sign_in";
+  if (verification?.state === "running") return "wait";
+  if (connected) return dashboard ? "view_portfolio" : "sync_account";
+  if (verification?.state === "failed" || verification?.state === "timed_out") return "retry_verification";
+  return "start_verification";
+}
+
 function accountFrom(value: unknown): WebullAccount | null {
   if (!isRecord(value)) return null;
   const accountId = textValue(value.accountId) || textValue(value.id);
@@ -200,14 +257,30 @@ export function normalizeWebullStatus(payload: unknown): WebullStatus {
     : [];
   const dashboard = dashboardFrom(value.dashboard);
   const selectedAccountId = textValue(value.selectedAccountId) || dashboard?.accountId || accounts[0]?.accountId || null;
+  const enabled = booleanValue(value.enabled, true);
+  const authenticated = booleanValue(value.authenticated, true);
+  const connected = booleanValue(value.connected, accounts.length > 0 || Boolean(dashboard));
+  const verification = authenticated ? verificationFrom(value.verification) : null;
+  const candidateNextAction = textValue(value.nextAction);
+  const nextAction = !enabled
+    ? "configure"
+    : !authenticated
+      ? "sign_in"
+      : candidateNextAction && NEXT_ACTIONS.has(candidateNextAction as WebullNextAction)
+        ? candidateNextAction as WebullNextAction
+        : fallbackNextAction(enabled, authenticated, connected, dashboard, verification);
 
   const csrfToken = textValue(value.csrfToken);
   if (csrfToken) portfolioCsrfToken = csrfToken;
   return {
-    enabled: booleanValue(value.enabled, true),
-    authenticated: booleanValue(value.authenticated, true),
-    connected: booleanValue(value.connected, accounts.length > 0 || Boolean(dashboard)),
-    verificationInProgress: booleanValue(value.verificationInProgress, false),
+    enabled,
+    authenticated,
+    connected,
+    verificationInProgress: verification
+      ? verification.state === "running"
+      : booleanValue(value.verificationInProgress, false),
+    verification,
+    nextAction,
     csrfToken,
     accounts,
     selectedAccountId,
@@ -245,9 +318,11 @@ async function request(path: string, init: RequestInit = {}): Promise<unknown> {
   });
   const payload = await readPayload(response);
   if (!response.ok) {
-    const fallback = response.status === 401 || response.status === 403
-      ? "You are not authorized to access this connected portfolio."
-      : `Webull request failed (${response.status}).`;
+    const fallback = response.status === 401
+      ? "Your Portfolio Lab owner session has expired."
+      : response.status === 403
+        ? "Portfolio Lab rejected this protected request. Refresh the status before retrying."
+        : `Webull request failed (${response.status}).`;
     const detail = errorMessage(payload, fallback);
     throw new WebullApiError(detail.message, response.status, detail.code);
   }
@@ -262,7 +337,7 @@ export function webullLoginUrl(returnTo = "/"): string {
 function actionFrom(payload: unknown): WebullActionResult {
   const value = unwrapData(payload);
   if (!isRecord(value)) return {};
-  const hasStatusShape = "enabled" in value || "connected" in value || "accounts" in value || "dashboard" in value;
+  const hasStatusShape = "enabled" in value || "connected" in value || "accounts" in value || "dashboard" in value || "verification" in value || "nextAction" in value;
   const nestedStatus = isRecord(value.status) ? normalizeWebullStatus(value.status) : null;
   const returnedCsrfToken = textValue(value.csrfToken);
   if (returnedCsrfToken) portfolioCsrfToken = returnedCsrfToken;
