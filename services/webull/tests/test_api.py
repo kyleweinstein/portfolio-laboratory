@@ -77,11 +77,11 @@ def test_missing_owner_configuration_keeps_health_public_but_protected_routes_cl
     assert response.json() == {"detail": "PORTFOLIO_OWNER_GITHUB_ID is not configured."}
 
 
-def test_official_live_calls_require_read_only_scope_confirmation() -> None:
+def test_official_live_calls_require_read_only_adapter_activation() -> None:
     runtime_settings = replace(
         settings(),
         adapter_kind="official",
-        webull_read_only_scope_confirmed=False,
+        webull_read_only_adapter_enabled=False,
     )
     adapter = FakeWebullAdapter()
     client = TestClient(
@@ -93,12 +93,12 @@ def test_official_live_calls_require_read_only_scope_confirmation() -> None:
     )
 
     health = client.get("/health").json()
-    assert health["webullReadOnlyScopeConfirmed"] is False
+    assert health["webullReadOnlyAdapterEnabled"] is False
     response = client.post("/v1/connect", headers=headers())
     assert response.status_code == 503
     assert response.json() == {
         "detail": (
-            "WEBULL_READ_ONLY_SCOPE_CONFIRMED must be true before live Webull "
+            "WEBULL_READ_ONLY_ADAPTER_ENABLED must be true before live Webull "
             "access is enabled."
         )
     }
@@ -110,6 +110,67 @@ def test_official_live_calls_require_read_only_scope_confirmation() -> None:
     status = client.get("/v1/status", headers=headers())
     assert status.status_code == 200
     assert status.json()["nextAction"] == "configure"
+
+
+def test_legacy_scope_flag_does_not_activate_application_adapter(monkeypatch) -> None:
+    monkeypatch.delenv("WEBULL_READ_ONLY_ADAPTER_ENABLED", raising=False)
+    monkeypatch.setenv("WEBULL_READ_ONLY_SCOPE_CONFIRMED", "true")
+
+    assert Settings.from_env().webull_read_only_adapter_enabled is False
+
+
+def test_application_adapter_marker_is_required_even_when_enabled() -> None:
+    runtime_settings = replace(
+        settings(),
+        adapter_kind="official",
+        webull_read_only_adapter_enabled=True,
+    )
+
+    class UnverifiedAdapter(FakeWebullAdapter):
+        enforcement_mode = "unverified"
+
+    adapter = UnverifiedAdapter()
+    client = TestClient(
+        create_app(
+            settings=runtime_settings,
+            adapter=adapter,
+            repository=MemoryRepository(),
+        )
+    )
+
+    assert client.get("/health").json()["webullReadOnlyAdapterEnabled"] is False
+    response = client.post("/v1/connect", headers=headers())
+    assert response.status_code == 503
+    assert adapter.calls == []
+
+
+def test_application_read_only_activation_allows_account_reads() -> None:
+    runtime_settings = replace(
+        settings(),
+        adapter_kind="official",
+        webull_read_only_adapter_enabled=True,
+    )
+    adapter = FakeWebullAdapter()
+    client = TestClient(
+        create_app(
+            settings=runtime_settings,
+            adapter=adapter,
+            repository=MemoryRepository(),
+        )
+    )
+
+    assert client.get("/health").json()["webullReadOnlyAdapterEnabled"] is True
+    response = client.post("/v1/connect", headers=headers())
+    assert response.status_code == 200
+    assert response.json()["nextAction"] == "view_portfolio"
+    assert {name for name, _ in adapter.calls} <= {
+        "list_accounts",
+        "get_balance",
+        "get_positions",
+        "get_cash_activities",
+        "get_order_history",
+        "probe",
+    }
 
 
 def test_scheduled_sync_is_private_and_syncs_every_account() -> None:

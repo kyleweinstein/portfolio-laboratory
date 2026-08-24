@@ -17,6 +17,8 @@ from .base import ReadOnlyWebullAdapter, WebullAdapterError
 class FakeWebullAdapter(ReadOnlyWebullAdapter):
     """Deterministic adapter for tests and local contract validation."""
 
+    enforcement_mode = "application"
+
     def __init__(self, *, as_of: datetime | None = None) -> None:
         self.as_of = as_of or datetime(2026, 8, 20, 20, 0, tzinfo=UTC)
         self.fail_positions = False

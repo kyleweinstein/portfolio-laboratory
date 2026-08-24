@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
-from .adapters import OfficialWebullAdapter
+from .adapters import OfficialWebullAdapter, application_read_only_gate_enabled
 from .config import Settings
 from .migrate import run_migrations
 from .repository import PostgresRepository
@@ -36,6 +36,11 @@ def run_cycle(settings: Settings) -> int:
         endpoint=settings.webull_endpoint,
         token_dir=settings.webull_token_dir,
     )
+    if not application_read_only_gate_enabled(
+        configured=settings.webull_read_only_adapter_enabled,
+        adapter=adapter,
+    ):
+        raise RuntimeError("Application read-only Webull access is not enabled.")
     repository = PostgresRepository(settings.database_url)
     service = SyncService(
         adapter,
@@ -69,11 +74,11 @@ def main() -> None:
     if (
         not settings.database_configured
         or not settings.webull_credentials_configured
-        or not settings.webull_read_only_scope_confirmed
+        or not settings.webull_read_only_adapter_enabled
     ):
         print(
             "Webull scheduled sync is disabled until its private configuration "
-            "and read-only scope confirmation are complete."
+            "and read-only adapter activation are complete."
         )
         return
     if not args.loop and not is_scheduled_sync_window():

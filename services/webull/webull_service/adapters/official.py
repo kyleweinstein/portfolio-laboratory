@@ -101,11 +101,15 @@ def _stable_id(prefix: str, value: dict[str, Any], fields: tuple[str, ...]) -> s
 
 
 class OfficialWebullAdapter(ReadOnlyWebullAdapter):
-    """Read-only adapter for Webull's official OpenAPI Python SDK.
+    """Application-enforced read adapter backed by Webull's official SDK.
 
-    Only account, balance, position and cash-activity SDK surfaces are imported.
-    The class deliberately exposes no order client and no trading operation.
+    The public adapter exposes only account, balance, position, cash-activity
+    and order-history reads. Webull packages those reads with mutations in its
+    full TradeClient, so this is not a broker-enforced credential boundary; no
+    mutation is exposed or called by Portfolio Lab.
     """
+
+    enforcement_mode = "application"
 
     def __init__(
         self,

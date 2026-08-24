@@ -4,14 +4,19 @@ import pytest
 
 from webull_service.adapters import (
     FakeWebullAdapter,
+    OfficialWebullAdapter,
     ReadOnlyWebullAdapter,
     WebullAdapterError,
+    application_read_only_gate_enabled,
 )
 from webull_service.repository import MemoryRepository
 from webull_service.sync import SyncService
 
 
 def test_adapter_contract_has_no_trading_methods() -> None:
+    assert ReadOnlyWebullAdapter.enforcement_mode == "unverified"
+    assert OfficialWebullAdapter.__dict__["enforcement_mode"] == "application"
+    assert FakeWebullAdapter.__dict__["enforcement_mode"] == "application"
     methods = {
         name
         for name, _ in inspect.getmembers(ReadOnlyWebullAdapter, inspect.isfunction)
@@ -24,9 +29,40 @@ def test_adapter_contract_has_no_trading_methods() -> None:
         "list_accounts",
         "probe",
     }
+    official_methods = {
+        name
+        for name, _ in inspect.getmembers(OfficialWebullAdapter, inspect.isfunction)
+    }
+    forbidden_tokens = {
+        "place",
+        "replace",
+        "cancel",
+        "preview",
+        "transfer",
+        "withdraw",
+        "deposit",
+        "fund",
+        "trade",
+    }
     assert not any(
-        token in methods
-        for token in ("place_order", "replace_order", "cancel_order", "preview_order")
+        token in method_name
+        for method_name in official_methods
+        for token in forbidden_tokens
+    )
+
+
+def test_application_gate_requires_concrete_adapter_opt_in() -> None:
+    class InheritedOnlyAdapter(FakeWebullAdapter):
+        pass
+
+    assert application_read_only_gate_enabled(
+        configured=True, adapter=FakeWebullAdapter()
+    )
+    assert not application_read_only_gate_enabled(
+        configured=False, adapter=FakeWebullAdapter()
+    )
+    assert not application_read_only_gate_enabled(
+        configured=True, adapter=InheritedOnlyAdapter()
     )
 
 
