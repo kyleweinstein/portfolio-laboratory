@@ -221,6 +221,7 @@ def create_app(
         portfolio: PortfolioState | None,
         performance_period_count: int,
         capabilities: CapabilityReport,
+        cash_activities_complete: bool | None,
     ) -> tuple[DataIssue, ...]:
         issues: list[DataIssue] = []
         if portfolio is None:
@@ -258,7 +259,18 @@ def create_app(
                         ),
                     )
                 )
-        if performance_period_count == 0:
+        if cash_activities_complete is False:
+            issues.append(
+                DataIssue(
+                    code="CASH_ACTIVITY_COVERAGE_INCOMPLETE",
+                    severity="warning",
+                    message=(
+                        "Current holdings are available, but performance is unavailable because "
+                        "cash activity coverage is incomplete."
+                    ),
+                )
+            )
+        elif performance_period_count == 0:
             issues.append(
                 DataIssue(
                     code="PERFORMANCE_HISTORY_BUILDING",
@@ -326,16 +338,21 @@ def create_app(
                 accounts=state.accounts,
                 selected_account_id=state.selected_account_id,
                 last_synced_at=state.last_synced_at,
+                last_sync_attempt=None,
                 dashboard=None,
             )
         account_id = state.selected_account_id
         portfolio = runtime_repository.get_portfolio(account_id)
+        last_sync_attempt = runtime_repository.get_latest_sync_attempt(account_id)
+        cash_activities_complete = runtime_repository.get_latest_cash_activity_coverage(
+            account_id
+        )
         valuations, external_flows = runtime_repository.get_performance_inputs(
             account_id
         )
         performance = (
             calculate_performance(account_id, valuations, external_flows)
-            if valuations
+            if valuations and cash_activities_complete is not False
             else None
         )
         activities = tuple(
@@ -343,7 +360,10 @@ def create_app(
         )
         capabilities = runtime_adapter.probe(live=False)
         issues = issues_for(
-            portfolio, len(performance.periods) if performance else 0, capabilities
+            portfolio,
+            len(performance.periods) if performance else 0,
+            capabilities,
+            cash_activities_complete,
         )
         return ServiceStatus(
             connected=True,
@@ -357,6 +377,7 @@ def create_app(
             accounts=state.accounts,
             selected_account_id=account_id,
             last_synced_at=state.last_synced_at,
+            last_sync_attempt=last_sync_attempt,
             dashboard=DashboardState(
                 portfolio=portfolio,
                 performance=performance,
@@ -443,6 +464,8 @@ def create_app(
     @router.post("/scheduled-sync", response_model=tuple[SyncResult, ...])
     def scheduled_sync() -> tuple[SyncResult, ...]:
         require_read_only_adapter_enabled()
+        if not runtime_repository.get_connection_state().connected:
+            return ()
         return tuple(sync_service.sync_all())
 
     @router.post("/backfill", response_model=BackfillResult)

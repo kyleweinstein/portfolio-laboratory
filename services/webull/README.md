@@ -70,12 +70,14 @@ requires both `Authorization: Bearer <INTERNAL_API_TOKEN>` and
 `x-portfolio-owner-github-id`. JSON fields use camelCase.
 
 - `GET /v1/status`: accounts, `selectedAccountId`, `lastSyncedAt`, dashboard,
-  durable `verification` details, and an explicit `nextAction`.
+  durable `verification` details, structured `lastSyncAttempt` quality status,
+  and an explicit `nextAction`.
 - `POST /v1/connect`, `DELETE /v1/connect`.
 - `POST /v1/accounts/select` with `{ "accountId": "..." }`.
 - `POST /v1/sync` and `POST /v1/backfill` with optional `accountId`.
 - `POST /v1/scheduled-sync`: private cron target that syncs every exposed
-  account after enforcing the read-only activation gate.
+  connected account after enforcing the read-only activation gate. It safely
+  no-ops before the owner completes the first connection.
 - `GET /v1/portfolio`, `/v1/activities`, `/v1/orders`, and `/v1/issues`.
 - `GET /v1/capabilities?live=true` performs only non-mutating capability calls.
 
@@ -105,3 +107,11 @@ Only snapshots captured at or after 4:00 p.m. U.S. Eastern participate in
 historical returns. Intraday snapshots remain available for current holdings and
 Webull-reported point-in-time metrics, but cannot masquerade as reconciled daily
 performance.
+
+Balance and positions form the atomic current-holdings snapshot. Cash activity is
+an optional upstream capability: if it is unavailable, current holdings still
+refresh, `lastSyncAttempt.cashActivitiesComplete` is `false`, and performance is
+withheld with a data-quality warning until a later successful activity sync or
+backfill fully covers the unresolved time range. A shorter routine refresh cannot
+erase a gap discovered by a longer backfill. Core account, balance, position, and
+database failures remain hard sync errors.

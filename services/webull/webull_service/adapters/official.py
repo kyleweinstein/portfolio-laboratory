@@ -190,7 +190,10 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         )
 
     def list_accounts(self) -> list[BrokerageAccount]:
-        payload = self._call(lambda client: client.account_v2.get_account_list())
+        payload = self._call(
+            lambda client: client.account_v2.get_account_list(),
+            failure_message="Webull account list request failed.",
+        )
         rows = _items(payload, "accounts", "data", "items", "list")
         return [
             BrokerageAccount(
@@ -209,7 +212,8 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
 
     def get_balance(self, account_id: str) -> BalanceSnapshot:
         payload = self._call(
-            lambda client: client.account_v2.get_account_balance(account_id)
+            lambda client: client.account_v2.get_account_balance(account_id),
+            failure_message="Webull balance request failed.",
         )
         if isinstance(payload, list):
             row = payload[0] if payload else {}
@@ -297,7 +301,8 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
 
     def get_positions(self, account_id: str) -> list[PositionSnapshot]:
         payload = self._call(
-            lambda client: client.account_v2.get_account_position(account_id)
+            lambda client: client.account_v2.get_account_position(account_id),
+            failure_message="Webull positions request failed.",
         )
         rows = _items(payload, "positions", "data", "items", "list")
         positions: list[PositionSnapshot] = []
@@ -574,10 +579,10 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
             or activity_type in _WITHDRAWAL_TYPES,
         )
 
-    def _call(self, operation: Callable[[Any], Any]) -> Any:
+    def _call(self, operation: Callable[[Any], Any], *, failure_message: str) -> Any:
         return self._invoke_sdk(
             lambda: operation(self._client()),
-            failure_message="Webull account request failed.",
+            failure_message=failure_message,
         )
 
     def _invoke_sdk(
@@ -589,7 +594,7 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         """Run one SDK operation without exposing SDK exception details."""
 
         try:
-            return self._response_json(operation())
+            return self._response_json(operation(), failure_message=failure_message)
         except WebullAdapterError:
             raise
         except Exception:  # noqa: BLE001 - third-party SDK exceptions are not stable.
@@ -632,16 +637,14 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         return self._trade_client
 
     @staticmethod
-    def _response_json(response: Any) -> Any:
+    def _response_json(response: Any, *, failure_message: str) -> Any:
         status_code = getattr(response, "status_code", None)
         if status_code != 200:
-            raise WebullAdapterError("Webull OpenAPI request failed.")
+            raise WebullAdapterError(failure_message)
         try:
             return response.json()
         except Exception:  # noqa: BLE001 - response wrappers can raise SDK-specific errors.
-            raise WebullAdapterError(
-                "Webull returned an invalid JSON response."
-            ) from None
+            raise WebullAdapterError(failure_message) from None
 
 
 def _optional_decimal(value: Any) -> Decimal | None:

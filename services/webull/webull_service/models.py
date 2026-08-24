@@ -182,6 +182,8 @@ class SyncResult(NormalizedModel):
     positions_written: int
     cash_activities_seen: int
     cash_activities_upserted: int
+    cash_activities_complete: bool = True
+    warning: str | None = Field(default=None, max_length=500)
 
     @field_validator("captured_at")
     @classmethod
@@ -202,6 +204,25 @@ class ConnectionState(NormalizedModel):
     selected_account_id: str | None
     connected_at: datetime | None = None
     last_synced_at: datetime | None = None
+
+
+class SyncAttemptStatus(str, Enum):
+    SUCCESS = "success"
+    ERROR = "error"
+
+
+class SyncAttempt(NormalizedModel):
+    sync_run_id: str
+    status: SyncAttemptStatus
+    started_at: datetime
+    completed_at: datetime
+    cash_activities_complete: bool | None = None
+    message: str | None = Field(default=None, max_length=500)
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def normalize_sync_time(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
 
 
 class VerificationState(str, Enum):
@@ -305,6 +326,7 @@ class ServiceStatus(NormalizedModel):
     accounts: tuple[BrokerageAccount, ...]
     selected_account_id: str | None
     last_synced_at: datetime | None
+    last_sync_attempt: SyncAttempt | None = None
     dashboard: DashboardState | None
 
 
@@ -313,6 +335,7 @@ class BackfillResult(NormalizedModel):
     requested_days: int
     cash_activities_seen: int
     cash_activities_upserted: int
+    cash_activities_available: bool = True
     order_records_seen: int
     order_records_upserted: int
     order_history_available: bool

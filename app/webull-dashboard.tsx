@@ -26,6 +26,8 @@ import {
   type WebullChartPoint,
   type WebullDashboardData,
   type WebullHolding,
+  type WebullIssue,
+  type WebullLastSyncAttempt,
   type WebullMetric,
   type WebullProvenance,
   type WebullSource,
@@ -101,6 +103,36 @@ function VerificationStatusCard({ verification, compact = false }: { verificatio
           <small>Error code: {verification.error.code}</small>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function SyncAttemptStatus({ attempt, compact = false }: { attempt: WebullLastSyncAttempt; compact?: boolean }) {
+  const cashStatus = attempt.cashActivitiesComplete === true
+    ? "Cash activities complete"
+    : attempt.cashActivitiesComplete === false
+      ? "Cash activities incomplete"
+      : "Cash activity coverage not reported";
+  return (
+    <div className={`webull-sync-attempt${compact ? " webull-sync-attempt-compact" : ""}`} data-status={attempt.status} role={attempt.status === "error" ? "alert" : "status"}>
+      <span className="webull-eyebrow">{attempt.status === "error" ? "Last sync failed" : "Last sync completed"}</span>
+      <strong><time dateTime={attempt.completedAt}>{displayDate(attempt.completedAt, true)}</time></strong>
+      {attempt.message ? <p>{attempt.message}</p> : null}
+      <small>Started {displayDate(attempt.startedAt, true)} · {cashStatus}</small>
+    </div>
+  );
+}
+
+function StatusIssues({ issues }: { issues: WebullIssue[] }) {
+  if (!issues.length) return null;
+  return (
+    <div className="webull-status-issues" aria-label="Current data issues">
+      {issues.map(issue => (
+        <div key={issue.issueId} data-severity={issue.severity}>
+          <strong>{issue.title}</strong>
+          {issue.message ? <p>{issue.message}</p> : null}
+        </div>
+      ))}
     </div>
   );
 }
@@ -428,10 +460,11 @@ function ExclusionsTable({ dashboard }: { dashboard: WebullDashboardData }) {
   );
 }
 
-function SourceStrip({ status, dashboard, action, onSelectAccount, onSync, onBackfill, onReviewIssues }: {
+function SourceStrip({ status, dashboard, action, showActions = true, onSelectAccount, onSync, onBackfill, onReviewIssues }: {
   status: WebullStatus;
   dashboard: WebullDashboardData | null;
   action: LoadingAction;
+  showActions?: boolean;
   onSelectAccount: (accountId: string) => void;
   onSync: () => void;
   onBackfill: () => void;
@@ -440,12 +473,14 @@ function SourceStrip({ status, dashboard, action, onSelectAccount, onSync, onBac
   const issues = dashboard?.issues || [];
   const selectedAccount = status.accounts.find(account => account.accountId === status.selectedAccountId);
   const quality = dashboard?.quality || (dashboard?.performanceReady ? "verified" : "partial");
+  const lastSuccessfulSyncAt = dashboard?.lastSuccessfulSyncAt ||
+    (status.lastSyncAttempt?.status === "success" ? status.lastSyncAttempt.completedAt : null);
   return (
-    <div className="webull-source-strip">
+    <div className="webull-source-strip" data-actions={showActions ? "true" : "false"}>
       <div className="webull-source-identity">
         <span className="webull-eyebrow">Connected source</span>
         <strong>Webull{selectedAccount ? ` · ${accountLabel(selectedAccount)}` : ""}</strong>
-        <small>Last successful sync: {displayDate(dashboard?.lastSuccessfulSyncAt, true)}</small>
+        <small>Last successful sync: {displayDate(lastSuccessfulSyncAt, true)}</small>
       </div>
       {status.accounts.length > 1 ? (
         <label className="webull-field">
@@ -460,11 +495,13 @@ function SourceStrip({ status, dashboard, action, onSelectAccount, onSync, onBac
         <strong>{displayDate(dashboard?.dataThrough)}</strong>
         <span className="webull-quality" data-quality={String(quality).toLowerCase()}>{qualityLabel(quality)}</span>
       </div>
-      <div className="webull-source-actions">
-        <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={onSync}>{action === "sync" ? "Syncing…" : "Sync now"}</button>
-        <button type="button" className="webull-button" disabled={Boolean(action)} onClick={onBackfill}>{action === "backfill" ? "Backfilling…" : "Backfill history"}</button>
-        <button type="button" className="webull-button webull-button-text" disabled={!issues.length} onClick={onReviewIssues}>Review issues{issues.length ? ` (${issues.length})` : ""}</button>
-      </div>
+      {showActions ? (
+        <div className="webull-source-actions">
+          <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={onSync}>{action === "sync" ? "Syncing…" : "Sync now"}</button>
+          <button type="button" className="webull-button" disabled={Boolean(action)} onClick={onBackfill}>{action === "backfill" ? "Backfilling…" : "Backfill history"}</button>
+          <button type="button" className="webull-button webull-button-text" disabled={!issues.length} onClick={onReviewIssues}>Review issues{issues.length ? ` (${issues.length})` : ""}</button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -491,16 +528,26 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
   }
 
   if (!dashboard) {
+    const lastSyncAttempt = status.lastSyncAttempt;
+    const durableSyncMessage = lastSyncAttempt?.status === "error" ? lastSyncAttempt.message : null;
+    const visibleActionError = actionError && actionError !== durableSyncMessage ? actionError : "";
+    const heading = lastSyncAttempt?.status === "error"
+      ? "The first account sync did not complete."
+      : lastSyncAttempt?.status === "success"
+        ? "The latest sync did not produce an account snapshot."
+        : "The first account sync has not completed.";
     return (
       <>
         {status.verification ? <VerificationStatusCard verification={status.verification} compact /> : null}
-        <SourceStrip status={status} dashboard={null} action={action} onSelectAccount={onSelectAccount} onSync={onSync} onBackfill={onBackfill} onReviewIssues={() => undefined} />
-        {actionError ? <div className="webull-notice webull-notice-error" role="alert">{actionError}</div> : null}
+        <SourceStrip status={status} dashboard={null} action={action} showActions={false} onSelectAccount={onSelectAccount} onSync={onSync} onBackfill={onBackfill} onReviewIssues={() => undefined} />
+        {lastSyncAttempt ? <SyncAttemptStatus attempt={lastSyncAttempt} /> : null}
+        {visibleActionError ? <div className="webull-notice webull-notice-error" role="alert">{visibleActionError}</div> : null}
         <div className="webull-state" role="status">
-          <span className="webull-eyebrow">Connected · No account snapshot</span>
-          <h2>Your Webull connection is ready.</h2>
-          <p>Sync this account to load current balances and positions. Historical performance appears only after the API returns a reconciled record.</p>
-          <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={onSync}>{action === "sync" ? "Syncing…" : "Sync account"}</button>
+          <span className="webull-eyebrow">Account access connected · Snapshot unavailable</span>
+          <h2>{heading}</h2>
+          <p>Portfolio Lab has not saved a reconciled balance and positions snapshot for this account. Historical performance will remain unavailable until that sync succeeds.</p>
+          <StatusIssues issues={status.issues} />
+          <button type="button" className="webull-button webull-button-primary" disabled={Boolean(action)} onClick={onSync}>{action === "sync" ? "Retrying sync…" : "Retry sync"}</button>
         </div>
       </>
     );
@@ -511,6 +558,8 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
   const period = metrics.periodLabel || "Available period";
   const coverage = finiteNumber(dashboard.analyticsCoverage);
   const issues = dashboard.issues || [];
+  const durableSyncMessage = status.lastSyncAttempt?.status === "error" ? status.lastSyncAttempt.message : null;
+  const visibleActionError = actionError && actionError !== durableSyncMessage ? actionError : "";
 
   function analyzeCurrent() {
     if (!eligible.length) return;
@@ -520,8 +569,9 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
   return (
     <div className="webull-connected" aria-busy={Boolean(action)}>
       {status.verification ? <VerificationStatusCard verification={status.verification} compact /> : null}
+      {status.lastSyncAttempt?.status === "error" ? <SyncAttemptStatus attempt={status.lastSyncAttempt} compact /> : null}
       <SourceStrip status={status} dashboard={dashboard} action={action} onSelectAccount={onSelectAccount} onSync={onSync} onBackfill={onBackfill} onReviewIssues={reviewIssues} />
-      {actionError ? <div className="webull-notice webull-notice-error" role="alert">{actionError}</div> : null}
+      {visibleActionError ? <div className="webull-notice webull-notice-error" role="alert">{visibleActionError}</div> : null}
       <p className="webull-sr-only" aria-live="polite">{announcement}</p>
 
       {!dashboard.performanceReady ? (
@@ -685,16 +735,20 @@ export default function WebullDashboard({
       setAnnouncement(result.message || (nextAction === "sync" ? "Webull sync completed." : nextAction === "backfill" ? "Webull history backfill requested." : "Webull account updated."));
     } catch (error) {
       let refreshedStatus: WebullStatus | null = null;
-      if (nextAction === "connect") {
+      if (nextAction === "connect" || nextAction === "sync" || nextAction === "backfill") {
         refreshedStatus = await loadStatus(undefined, true);
-        if (error instanceof WebullApiError && error.status === 409 &&
+        if (nextAction === "connect" && error instanceof WebullApiError && error.status === 409 &&
             (refreshedStatus?.verification?.state === "running" || refreshedStatus?.verificationInProgress)) {
           setAnnouncement("Webull verification is already in progress. This page will update automatically.");
           return;
         }
       }
       const nextFailure = stateFailure(error);
-      setActionError(nextFailure.message);
+      const durableSyncMessage = nextAction === "sync" && error instanceof WebullApiError && error.status >= 500 &&
+        refreshedStatus?.lastSyncAttempt?.status === "error"
+        ? refreshedStatus.lastSyncAttempt.message
+        : null;
+      setActionError(durableSyncMessage || nextFailure.message);
       if (nextFailure.kind === "unauthorized") setFailure(nextFailure);
     } finally {
       setAction(null);
@@ -836,10 +890,13 @@ const WEBULL_STYLES = `
 .webull-verification-heading{display:grid;gap:4px}.webull-verification-heading strong{font:800 .9rem/1.3 var(--sans)}
 .webull-verification-times{display:flex;gap:12px 24px;flex-wrap:wrap;margin:0}.webull-verification-times div{display:grid;gap:3px}.webull-verification-times dt{color:var(--ink-soft);font:700 .58rem var(--mono);letter-spacing:.06em;text-transform:uppercase}.webull-verification-times dd{margin:0;font:700 .68rem var(--mono)}
 .webull-verification-error{display:grid;gap:4px;padding-top:11px;border-top:1px solid var(--rule-light);color:#8D2020}.webull-verification-error strong{font:.78rem/1.45 var(--mono)}.webull-verification-error small{font:.58rem var(--mono);letter-spacing:.04em;text-transform:uppercase}
+.webull-sync-attempt{display:grid;gap:5px;margin:14px 0;padding:14px;border:1px solid var(--rule);border-left:5px solid var(--emerald);background:var(--paper-alt)}.webull-sync-attempt[data-status="error"]{border-left-color:#C32B2B}.webull-sync-attempt-compact{margin:0 0 14px}.webull-sync-attempt>strong{font:800 .86rem var(--mono)}.webull-sync-attempt>p{margin:2px 0!important;color:var(--ink)!important;font:.78rem/1.5 var(--mono)!important}.webull-sync-attempt>small{color:var(--ink-soft);font:.6rem/1.45 var(--mono)}
+.webull-status-issues{display:grid;gap:8px;margin:14px 0}.webull-status-issues>div{padding:10px 12px;border-left:4px solid var(--cobalt);background:var(--paper)}.webull-status-issues>div[data-severity="warning"]{border-left-color:var(--amber)}.webull-status-issues>div[data-severity="error"]{border-left-color:#C32B2B}.webull-status-issues strong{font:700 .7rem var(--mono)}.webull-status-issues p{margin:4px 0 0!important;font:.78rem/1.45 var(--serif)!important}
 .webull-loading-bar{height:4px;margin-top:20px;background:linear-gradient(90deg,var(--accent) 0 20%,var(--rule-light) 20% 100%);background-size:200% 100%;animation:webull-loading 1.2s linear infinite}
 @keyframes webull-loading{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.webull-loading-bar{animation:none}.webull-button{transition:none}}
 .webull-source-strip{display:grid;grid-template-columns:minmax(230px,1.4fr) minmax(180px,.85fr) minmax(180px,.75fr) auto;gap:16px;align-items:end;border:2px solid var(--rule);background:var(--paper-alt);padding:16px}
+.webull-source-strip[data-actions="false"]{grid-template-columns:minmax(230px,1.4fr) minmax(180px,.85fr) minmax(180px,.75fr)}
 .webull-source-identity,.webull-source-freshness{display:grid;gap:4px;min-width:0}
 .webull-source-identity strong,.webull-source-freshness strong{font:800 .86rem var(--sans);overflow-wrap:anywhere}
 .webull-source-identity small{color:var(--ink-soft);font:.62rem var(--mono)}
@@ -886,7 +943,7 @@ const WEBULL_STYLES = `
 .webull-issues{border:1px solid var(--rule);margin:18px 0;scroll-margin:20px}.webull-issues summary{display:flex;justify-content:space-between;gap:12px;padding:14px 16px;background:var(--paper-alt);font:700 .7rem var(--mono);letter-spacing:.05em;text-transform:uppercase;cursor:pointer}.webull-issues summary span{border:1px solid var(--rule);padding:1px 5px}
 .webull-issues>p{padding:16px;color:var(--ink-soft);font:.75rem var(--mono)}.webull-issues ul{list-style:none;margin:0;padding:0}.webull-issues li{padding:13px 16px;border-top:1px solid var(--rule-light);border-left:4px solid var(--cobalt)}.webull-issues li[data-severity="warning"]{border-left-color:var(--amber)}.webull-issues li[data-severity="error"]{border-left-color:#C32B2B}.webull-issues li p{margin:3px 0;color:var(--ink-soft);font:.85rem/1.5 var(--serif)}.webull-issues li small{color:var(--ink-soft);font:.6rem var(--mono)}
 .webull-sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
-@media(max-width:1000px){.webull-source-strip{grid-template-columns:1fr 1fr}.webull-source-actions{justify-content:flex-start}.webull-detail-grid{grid-template-columns:1fr}}
-@media(max-width:720px){.webull-panel,.webull-manual-panel{padding:14px}.webull-source-strip{grid-template-columns:1fr}.webull-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.webull-metric:nth-child(3n){border-right:1px solid var(--rule-light)}.webull-metric:nth-child(2n){border-right:0}.webull-metric:nth-last-child(-n+3){border-bottom:1px solid var(--rule-light)}.webull-metric:nth-last-child(-n+2){border-bottom:0}.webull-analysis-card{grid-template-columns:1fr}.webull-card-heading{display:grid}.webull-chart-tabs{width:100%}.webull-chart-tab{flex:1}.webull-source-tab{min-width:0;flex:1}.webull-source-tab-status{display:none}}
+@media(max-width:1000px){.webull-source-strip,.webull-source-strip[data-actions="false"]{grid-template-columns:1fr 1fr}.webull-source-actions{justify-content:flex-start}.webull-detail-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.webull-panel,.webull-manual-panel{padding:14px}.webull-source-strip,.webull-source-strip[data-actions="false"]{grid-template-columns:1fr}.webull-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.webull-metric:nth-child(3n){border-right:1px solid var(--rule-light)}.webull-metric:nth-child(2n){border-right:0}.webull-metric:nth-last-child(-n+3){border-bottom:1px solid var(--rule-light)}.webull-metric:nth-last-child(-n+2){border-bottom:0}.webull-analysis-card{grid-template-columns:1fr}.webull-card-heading{display:grid}.webull-chart-tabs{width:100%}.webull-chart-tab{flex:1}.webull-source-tab{min-width:0;flex:1}.webull-source-tab-status{display:none}}
 @media(max-width:440px){.webull-source-tabs{display:grid;grid-template-columns:1fr 1fr}.webull-source-tab{padding-inline:10px}.webull-state{padding:20px}.webull-metric-grid{grid-template-columns:1fr}.webull-metric,.webull-metric:nth-child(2n),.webull-metric:nth-child(3n),.webull-metric:nth-last-child(-n+2){border-right:0;border-bottom:1px solid var(--rule-light)}.webull-metric:last-child{border-bottom:0}.webull-source-actions{display:grid}.webull-source-actions .webull-button{width:100%}.webull-chart-tabs{display:grid}.webull-chart-tab+.webull-chart-tab{border-left:1px solid var(--rule);border-top:0}.webull-analysis-card .webull-button{width:100%}}
 `;

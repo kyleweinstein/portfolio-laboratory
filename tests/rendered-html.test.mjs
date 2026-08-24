@@ -153,10 +153,12 @@ test("Webull stays disabled by default without affecting the public manual app",
     connected: false,
     verificationInProgress: false,
     verification: null,
+    lastSyncAttempt: null,
     nextAction: "configure",
     accounts: [],
     selectedAccountId: null,
     dashboard: null,
+    issues: [],
   });
 });
 

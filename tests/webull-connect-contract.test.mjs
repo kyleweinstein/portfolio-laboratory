@@ -54,3 +54,19 @@ test("403 mutation failures remain action errors and status text stays encoding-
   assert.match(dashboard, /"Checking connection\.\.\."/);
   assert.doesNotMatch(dashboard, /Checking connectionâ€¦/);
 });
+
+test("connected accounts without a snapshot show the durable sync result and one retry action", () => {
+  assert.match(dashboard, /Account access connected · Snapshot unavailable/);
+  assert.match(dashboard, /The first account sync did not complete/);
+  assert.match(dashboard, /SyncAttemptStatus attempt=\{lastSyncAttempt\}/);
+  assert.match(dashboard, /StatusIssues issues=\{status\.issues\}/);
+  assert.match(dashboard, /showActions=\{false\}/);
+  assert.match(dashboard, /"Retrying sync…" : "Retry sync"/);
+  assert.doesNotMatch(dashboard, /Your Webull connection is ready/);
+});
+
+test("sync and backfill failures refresh status and prefer the durable sync message", () => {
+  assert.match(dashboard, /nextAction === "connect" \|\| nextAction === "sync" \|\| nextAction === "backfill"[\s\S]*await loadStatus\(undefined, true\)/);
+  assert.match(dashboard, /nextAction === "sync"[\s\S]*error\.status >= 500[\s\S]*refreshedStatus\?\.lastSyncAttempt\?\.status === "error"/);
+  assert.match(dashboard, /setActionError\(durableSyncMessage \|\| nextFailure\.message\)/);
+});

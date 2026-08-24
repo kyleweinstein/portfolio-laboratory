@@ -181,13 +181,35 @@ def test_scheduled_sync_is_private_and_syncs_every_account() -> None:
     )
 
     assert client.post("/v1/scheduled-sync").status_code == 401
+    skipped = client.post("/v1/scheduled-sync", headers=headers())
+    assert skipped.status_code == 200
+    assert skipped.json() == []
+    assert adapter.calls == []
+
+    connected = client.post("/v1/connect", headers=headers())
+    assert connected.status_code == 200, connected.text
     response = client.post("/v1/scheduled-sync", headers=headers())
 
     assert response.status_code == 200, response.text
     assert len(response.json()) == 1
     assert response.json()[0]["accountId"] == "fake-account-001"
     assert response.json()[0]["positionsWritten"] == 2
+    assert response.json()[0]["cashActivitiesComplete"] is True
     assert repository.get_connection_state().connected is True
+
+
+def test_scheduled_sync_returns_failure_for_a_connected_core_snapshot_error() -> None:
+    adapter = FakeWebullAdapter()
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=MemoryRepository())
+    )
+    assert client.post("/v1/connect", headers=headers()).status_code == 200
+    adapter.fail_positions = True
+
+    response = client.post("/v1/scheduled-sync", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "One or more Webull account snapshots failed."}
 
 
 def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:
@@ -204,6 +226,9 @@ def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:
     assert payload["selectedAccountId"] == "fake-account-001"
     assert payload["dashboard"]["portfolio"]["balance"]["equity"] == "15000.00"
     assert payload["dashboard"]["portfolio"]["positions"][0]["symbol"] == "AAPL"
+    assert payload["lastSyncAttempt"]["status"] == "success"
+    assert payload["lastSyncAttempt"]["cashActivitiesComplete"] is True
+    assert payload["lastSyncAttempt"]["message"] is None
     assert client.get("/v1/accounts", headers=headers()).json() == payload["accounts"]
 
     synced = client.post("/v1/sync", headers=headers(), json={})
@@ -229,7 +254,85 @@ def test_proxy_contract_connect_select_sync_dashboard_and_disconnect() -> None:
     assert disconnected_payload["accounts"] == []
     assert disconnected_payload["selectedAccountId"] is None
     assert disconnected_payload["lastSyncedAt"] is None
+    assert disconnected_payload["lastSyncAttempt"] is None
     assert disconnected_payload["dashboard"] is None
+
+
+def test_incomplete_cash_activity_coverage_keeps_holdings_but_blocks_performance() -> (
+    None
+):
+    adapter = FakeWebullAdapter()
+    adapter.fail_cash_activities = True
+    repository = MemoryRepository()
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=repository)
+    )
+
+    response = client.post("/v1/connect", headers=headers())
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["connected"] is True
+    assert payload["dashboard"]["portfolio"]["positions"][0]["symbol"] == "AAPL"
+    assert payload["dashboard"]["performance"] is None
+    assert payload["lastSyncAttempt"]["status"] == "success"
+    assert payload["lastSyncAttempt"]["cashActivitiesComplete"] is False
+    assert payload["lastSyncAttempt"]["message"] == (
+        "Current holdings were refreshed, but cash activity coverage is incomplete; "
+        "performance remains unavailable."
+    )
+    issue_codes = {item["code"] for item in payload["dashboard"]["issues"]}
+    assert "CASH_ACTIVITY_COVERAGE_INCOMPLETE" in issue_codes
+    assert "PERFORMANCE_HISTORY_BUILDING" not in issue_codes
+
+
+def test_failed_core_sync_is_visible_without_invalidating_prior_cash_coverage() -> None:
+    adapter = FakeWebullAdapter()
+    repository = MemoryRepository()
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=repository)
+    )
+    assert client.post("/v1/connect", headers=headers()).status_code == 200
+    adapter.fail_positions = True
+
+    failed = client.post("/v1/sync", headers=headers(), json={})
+
+    assert failed.status_code == 502
+    status = client.get("/v1/status", headers=headers())
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["lastSyncAttempt"]["status"] == "error"
+    assert payload["lastSyncAttempt"]["cashActivitiesComplete"] is None
+    assert payload["lastSyncAttempt"]["message"] == "Webull positions request failed."
+    assert payload["dashboard"]["portfolio"] is not None
+    assert payload["dashboard"]["performance"] is not None
+
+
+def test_partial_backfill_marks_performance_coverage_incomplete() -> None:
+    adapter = FakeWebullAdapter()
+    repository = MemoryRepository()
+    client = TestClient(
+        create_app(settings=settings(), adapter=adapter, repository=repository)
+    )
+    assert client.post("/v1/connect", headers=headers()).status_code == 200
+    adapter.fail_cash_activities = True
+
+    backfill = client.post("/v1/backfill", headers=headers(), json={"days": 365})
+
+    assert backfill.status_code == 200, backfill.text
+    assert backfill.json()["cashActivitiesAvailable"] is False
+    assert backfill.json()["orderHistoryAvailable"] is True
+    adapter.fail_cash_activities = False
+    routine = client.post("/v1/sync", headers=headers(), json={})
+    assert routine.status_code == 200, routine.text
+    assert routine.json()["cashActivitiesComplete"] is False
+    payload = client.get("/v1/status", headers=headers()).json()
+    assert payload["lastSyncAttempt"]["status"] == "success"
+    assert payload["lastSyncAttempt"]["cashActivitiesComplete"] is False
+    assert payload["dashboard"]["performance"] is None
+    assert "CASH_ACTIVITY_COVERAGE_INCOMPLETE" in {
+        item["code"] for item in payload["dashboard"]["issues"]
+    }
 
 
 def test_connect_is_idempotent_and_returns_durable_overlapping_verification() -> None:

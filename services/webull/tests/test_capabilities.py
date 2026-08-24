@@ -58,8 +58,35 @@ def test_raw_sdk_account_exception_is_sanitized() -> None:
     with pytest.raises(WebullAdapterError) as caught:
         adapter.list_accounts()
 
-    assert str(caught.value) == "Webull account request failed."
+    assert str(caught.value) == "Webull account list request failed."
     assert "private-token" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "expected_message"),
+    [
+        ("get_balance", "Webull balance request failed."),
+        ("get_positions", "Webull positions request failed."),
+    ],
+)
+def test_raw_sdk_core_exception_identifies_safe_stage(
+    method_name: str, expected_message: str
+) -> None:
+    class _Accounts:
+        def get_account_balance(self, _account_id):
+            raise RuntimeError("private-balance-credential-details")
+
+        def get_account_position(self, _account_id):
+            raise RuntimeError("private-position-account-details")
+
+    adapter = OfficialWebullAdapter(app_key="configured", app_secret="configured")
+    adapter._trade_client = type("Client", (), {"account_v2": _Accounts()})()
+
+    with pytest.raises(WebullAdapterError) as caught:
+        getattr(adapter, method_name)("account-1")
+
+    assert str(caught.value) == expected_message
+    assert "private-" not in str(caught.value)
 
 
 def test_raw_order_sdk_exception_degrades_backfill_without_leaking_details() -> None:
@@ -99,5 +126,5 @@ def test_raw_order_sdk_exception_degrades_backfill_without_leaking_details() -> 
 
     assert result.order_history_available is False
     assert result.order_records_seen == 0
-    assert "Webull order history is unavailable." in result.message
+    assert "Read-only order history was unavailable." in result.message
     assert "secret-order" not in result.message

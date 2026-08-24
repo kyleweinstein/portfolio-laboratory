@@ -125,17 +125,27 @@ export type WebullVerification = {
   error: { code: string; message: string } | null;
 };
 
+export type WebullLastSyncAttempt = {
+  status: "success" | "error";
+  startedAt: string;
+  completedAt: string;
+  cashActivitiesComplete: boolean | null;
+  message: string | null;
+};
+
 export type WebullStatus = {
   enabled: boolean;
   authenticated: boolean;
   connected: boolean;
   verificationInProgress: boolean;
   verification: WebullVerification | null;
+  lastSyncAttempt: WebullLastSyncAttempt | null;
   nextAction: WebullNextAction;
   csrfToken?: string | null;
   accounts: WebullAccount[];
   selectedAccountId: string | null;
   dashboard: WebullDashboardData | null;
+  issues: WebullIssue[];
 };
 
 export type WebullActionResult = {
@@ -217,6 +227,40 @@ function verificationFrom(value: unknown): WebullVerification | null {
   };
 }
 
+function lastSyncAttemptFrom(value: unknown): WebullLastSyncAttempt | null {
+  if (!isRecord(value)) return null;
+  const status = textValue(value.status);
+  const startedAt = timestampValue(value.startedAt);
+  const completedAt = timestampValue(value.completedAt);
+  const cashActivitiesComplete = value.cashActivitiesComplete;
+  if ((status !== "success" && status !== "error") || !startedAt || !completedAt ||
+      (cashActivitiesComplete !== null && cashActivitiesComplete !== undefined && typeof cashActivitiesComplete !== "boolean")) {
+    return null;
+  }
+  return {
+    status,
+    startedAt,
+    completedAt,
+    cashActivitiesComplete: typeof cashActivitiesComplete === "boolean" ? cashActivitiesComplete : null,
+    message: textValue(value.message)?.slice(0, 300) || null,
+  };
+}
+
+function issueFrom(value: unknown): WebullIssue | null {
+  if (!isRecord(value)) return null;
+  const issueId = textValue(value.issueId);
+  const title = textValue(value.title);
+  if (!issueId || !title) return null;
+  return {
+    issueId: issueId.slice(0, 100),
+    severity: textValue(value.severity)?.slice(0, 24) || "info",
+    title: title.slice(0, 160),
+    message: textValue(value.message)?.slice(0, 500) || null,
+    affectedMetric: textValue(value.affectedMetric)?.slice(0, 100) || null,
+    date: timestampValue(value.date) || null,
+  };
+}
+
 function fallbackNextAction(enabled: boolean, authenticated: boolean, connected: boolean, dashboard: WebullDashboardData | null, verification: WebullVerification | null): WebullNextAction {
   if (!enabled) return "configure";
   if (!authenticated) return "sign_in";
@@ -261,6 +305,10 @@ export function normalizeWebullStatus(payload: unknown): WebullStatus {
   const authenticated = booleanValue(value.authenticated, true);
   const connected = booleanValue(value.connected, accounts.length > 0 || Boolean(dashboard));
   const verification = authenticated ? verificationFrom(value.verification) : null;
+  const lastSyncAttempt = authenticated ? lastSyncAttemptFrom(value.lastSyncAttempt) : null;
+  const issues = authenticated && Array.isArray(value.issues)
+    ? value.issues.map(issueFrom).filter((issue): issue is WebullIssue => Boolean(issue))
+    : [];
   const candidateNextAction = textValue(value.nextAction);
   const nextAction = !enabled
     ? "configure"
@@ -280,11 +328,13 @@ export function normalizeWebullStatus(payload: unknown): WebullStatus {
       ? verification.state === "running"
       : booleanValue(value.verificationInProgress, false),
     verification,
+    lastSyncAttempt,
     nextAction,
     csrfToken,
     accounts,
     selectedAccountId,
     dashboard,
+    issues,
   };
 }
 
@@ -337,7 +387,7 @@ export function webullLoginUrl(returnTo = "/"): string {
 function actionFrom(payload: unknown): WebullActionResult {
   const value = unwrapData(payload);
   if (!isRecord(value)) return {};
-  const hasStatusShape = "enabled" in value || "connected" in value || "accounts" in value || "dashboard" in value || "verification" in value || "nextAction" in value;
+  const hasStatusShape = "enabled" in value || "connected" in value || "accounts" in value || "dashboard" in value || "verification" in value || "lastSyncAttempt" in value || "nextAction" in value;
   const nestedStatus = isRecord(value.status) ? normalizeWebullStatus(value.status) : null;
   const returnedCsrfToken = textValue(value.csrfToken);
   if (returnedCsrfToken) portfolioCsrfToken = returnedCsrfToken;

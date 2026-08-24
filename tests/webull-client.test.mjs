@@ -24,11 +24,19 @@ test("Webull status normalizes wrapped responses without inventing connection st
           completedAt: null,
           error: null,
         },
+        lastSyncAttempt: {
+          status: "error",
+          startedAt: "2026-08-20T19:58:00Z",
+          completedAt: "2026-08-20T20:01:00Z",
+          cashActivitiesComplete: false,
+          message: "Webull cash activities are unavailable.",
+        },
         nextAction: "wait",
         csrfToken: "csrf-token-for-test-only-1234567890",
         accounts: [{ id: "acct-1", label: "Individual", last4: "1234", currency: "USD" }],
         selectedAccountId: "acct-1",
         dashboard: { accountId: "acct-1", quality: "verified", holdings: [] },
+        issues: [{ issueId: "SYNC_INCOMPLETE", severity: "warning", title: "Sync incomplete", message: "Retry the account sync." }],
       },
     },
   });
@@ -37,7 +45,10 @@ test("Webull status normalizes wrapped responses without inventing connection st
   assert.equal(status.verificationInProgress, true);
   assert.equal(status.verification?.stage, "verifying_access");
   assert.equal(status.verification?.startedAt, "2026-08-20T20:00:00Z");
+  assert.equal(status.lastSyncAttempt?.status, "error");
+  assert.equal(status.lastSyncAttempt?.cashActivitiesComplete, false);
   assert.equal(status.nextAction, "wait");
+  assert.equal(status.issues[0].issueId, "SYNC_INCOMPLETE");
   assert.equal(status.accounts[0].accountId, "acct-1");
   assert.match(status.accounts[0].maskedIdentifier, /1234$/);
   assert.equal(status.dashboard?.quality, "verified");
@@ -78,13 +89,46 @@ test("Webull status rejects unknown verification values and never exposes attemp
       completedAt: "2026-08-20T20:05:00Z",
       error: { code: "PRIVATE", message: "Private server detail" },
     },
+    lastSyncAttempt: {
+      status: "error",
+      startedAt: "2026-08-20T20:00:00Z",
+      completedAt: "2026-08-20T20:05:00Z",
+      cashActivitiesComplete: false,
+      message: "Private sync detail",
+    },
     nextAction: "retry_verification",
     accounts: [],
     selectedAccountId: null,
     dashboard: null,
+    issues: [{ issueId: "PRIVATE", severity: "error", title: "Private issue" }],
   });
   assert.equal(signedOut.verification, null);
+  assert.equal(signedOut.lastSyncAttempt, null);
   assert.equal(signedOut.nextAction, "sign_in");
+  assert.deepEqual(signedOut.issues, []);
+});
+
+test("Webull status rejects malformed durable sync attempts", () => {
+  const status = normalizeWebullStatus({
+    enabled: true,
+    authenticated: true,
+    connected: true,
+    verificationInProgress: false,
+    verification: null,
+    lastSyncAttempt: {
+      status: "running",
+      startedAt: "not-a-time",
+      completedAt: "2026-08-20T20:05:00Z",
+      cashActivitiesComplete: "yes",
+      message: "Malformed",
+    },
+    nextAction: "sync_account",
+    accounts: [{ accountId: "acct-1" }],
+    selectedAccountId: "acct-1",
+    dashboard: null,
+    issues: [],
+  });
+  assert.equal(status.lastSyncAttempt, null);
 });
 
 test("eligible Webull positions create one normalized long-only analytics sleeve", () => {
