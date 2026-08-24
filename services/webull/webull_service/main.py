@@ -14,6 +14,7 @@ from .adapters import (
     OfficialWebullAdapter,
     ReadOnlyWebullAdapter,
     WebullAdapterError,
+    application_read_only_gate_enabled,
 )
 from .config import Settings
 from .migrate import run_migrations
@@ -98,6 +99,14 @@ def create_app(
         cash_activity_lookback_days=runtime_settings.cash_activity_lookback_days,
     )
 
+    def live_read_only_access_enabled() -> bool:
+        if runtime_settings.adapter_kind == "fake":
+            return True
+        return application_read_only_gate_enabled(
+            configured=runtime_settings.webull_read_only_adapter_enabled,
+            adapter=runtime_adapter,
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if runtime_settings.auto_migrate and runtime_settings.database_url:
@@ -139,10 +148,7 @@ def create_app(
             database_configured=runtime_settings.database_configured,
             webull_credentials_configured=runtime_settings.webull_credentials_configured
             or runtime_settings.adapter_kind == "fake",
-            webull_read_only_scope_confirmed=(
-                runtime_settings.webull_read_only_scope_confirmed
-                or runtime_settings.adapter_kind == "fake"
-            ),
+            webull_read_only_adapter_enabled=live_read_only_access_enabled(),
             authentication_configured=bool(
                 runtime_settings.internal_api_token
                 and runtime_settings.portfolio_owner_github_id
@@ -190,15 +196,15 @@ def create_app(
 
     router = APIRouter(prefix="/v1", dependencies=[Depends(require_internal_access)])
 
-    def require_read_only_scope_confirmation() -> None:
+    def require_read_only_adapter_enabled() -> None:
         if (
             runtime_settings.adapter_kind == "official"
-            and not runtime_settings.webull_read_only_scope_confirmed
+            and not live_read_only_access_enabled()
         ):
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "WEBULL_READ_ONLY_SCOPE_CONFIRMED must be true before live "
+                    "WEBULL_READ_ONLY_ADAPTER_ENABLED must be true before live "
                     "Webull access is enabled."
                 ),
             )
@@ -281,7 +287,7 @@ def create_app(
     ) -> ServiceNextAction:
         if (
             runtime_settings.adapter_kind == "official"
-            and not runtime_settings.webull_read_only_scope_confirmed
+            and not live_read_only_access_enabled()
         ):
             return ServiceNextAction.CONFIGURE
         if verification and verification.state is VerificationState.RUNNING:
@@ -362,7 +368,7 @@ def create_app(
     @router.get("/capabilities", response_model=CapabilityReport)
     def capabilities(live: bool = Query(default=False)) -> CapabilityReport:
         if live:
-            require_read_only_scope_confirmation()
+            require_read_only_adapter_enabled()
         return runtime_adapter.probe(live=live)
 
     @router.get("/status", response_model=ServiceStatus)
@@ -377,7 +383,7 @@ def create_app(
     def connect() -> ServiceStatus:
         if runtime_repository.get_connection_state().connected:
             return status_response()
-        require_read_only_scope_confirmation()
+        require_read_only_adapter_enabled()
         attempt, created = runtime_repository.begin_verification_attempt()
         if not created:
             return status_response()
@@ -430,18 +436,18 @@ def create_app(
 
     @router.post("/sync", response_model=SyncResult)
     def sync(payload: AccountTarget | None = None) -> SyncResult:
-        require_read_only_scope_confirmation()
+        require_read_only_adapter_enabled()
         account_id = selected_account(payload.account_id if payload else None)
         return sync_service.sync_account(account_id)
 
     @router.post("/scheduled-sync", response_model=tuple[SyncResult, ...])
     def scheduled_sync() -> tuple[SyncResult, ...]:
-        require_read_only_scope_confirmation()
+        require_read_only_adapter_enabled()
         return tuple(sync_service.sync_all())
 
     @router.post("/backfill", response_model=BackfillResult)
     def backfill(payload: BackfillRequest | None = None) -> BackfillResult:
-        require_read_only_scope_confirmation()
+        require_read_only_adapter_enabled()
         request = payload or BackfillRequest()
         account_id = selected_account(request.account_id)
         return sync_service.backfill(account_id, days=request.days)

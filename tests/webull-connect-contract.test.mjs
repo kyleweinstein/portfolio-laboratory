@@ -34,15 +34,18 @@ test("disconnected UI explains the approval wait and prevents duplicate verifica
   assert.match(dashboard, /nextAction === "connect"[\s\S]*await loadStatus\(undefined, true\)/);
 });
 
-test("configuration-required status cannot start verification", () => {
-  assert.match(dashboard, /status\?\.nextAction === "configure"[\s\S]*Configuration required/);
-  assert.match(dashboard, /Confirm the Webull key is limited to Account Infos and Order Query, then enable the private service gate\./);
-  assert.match(dashboard, /status\?\.nextAction === "configure"[\s\S]*\? "Configuration required"/);
+test("read-only activation pending cannot start verification", () => {
+  assert.match(dashboard, /status\?\.nextAction === "configure"[\s\S]*Read-only protection/);
+  assert.match(dashboard, /Portfolio Lab already has the connection details it needs/);
+  assert.match(dashboard, /does not implement trading or transfer actions/);
+  assert.match(dashboard, /No additional Webull setup is needed\. When activation is complete, return here to verify the connection\./);
+  assert.match(dashboard, /status\?\.nextAction === "configure"[\s\S]*\? "Read-only activation pending"/);
   const configureBranch = dashboard
     .split('status?.nextAction === "configure" ? (')[1]
     ?.split(') : status && !status.connected ? (')[0] || "";
   assert.ok(configureBranch);
   assert.doesNotMatch(configureBranch, /onClick=\{connect\}|Verify Webull connection/);
+  assert.doesNotMatch(configureBranch, /App Key[^.]+(?:limited|restricted|read-only|query-only)|Account Infos|Order Query|permission scope/i);
 });
 
 test("403 mutation failures remain action errors and status text stays encoding-safe", () => {

@@ -1,4 +1,9 @@
-from .base import AdapterConfigurationError, ReadOnlyWebullAdapter, WebullAdapterError
+from .base import (
+    AdapterConfigurationError,
+    ReadOnlyWebullAdapter,
+    WebullAdapterError,
+    application_read_only_gate_enabled,
+)
 from .fake import FakeWebullAdapter
 from .official import OfficialWebullAdapter
 
@@ -8,4 +13,5 @@ __all__ = [
     "OfficialWebullAdapter",
     "ReadOnlyWebullAdapter",
     "WebullAdapterError",
+    "application_read_only_gate_enabled",
 ]

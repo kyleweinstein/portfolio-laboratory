@@ -728,7 +728,7 @@ export default function WebullDashboard({
     : failure?.kind === "disabled"
       ? "Not configured"
       : status?.nextAction === "configure"
-        ? "Configuration required"
+        ? "Read-only activation pending"
         : failure?.kind === "unauthorized" || status?.nextAction === "sign_in"
           ? "Sign-in required"
           : verificationInProgress
@@ -782,11 +782,11 @@ export default function WebullDashboard({
           ) : failure?.kind === "error" && !status ? (
             <div className="webull-state webull-state-error" role="alert"><span className="webull-eyebrow">Connection error</span><h2>Webull could not be loaded.</h2><p>{failure.message}</p><button type="button" className="webull-button" onClick={() => void loadStatus()}>Try again</button></div>
           ) : status?.nextAction === "configure" ? (
-            <div className="webull-state webull-state-error" role="alert">
-              <span className="webull-eyebrow">Configuration required</span>
-              <h2>Finish the server-side read-only gate.</h2>
-              <p>Portfolio Lab will not verify Webull until the private service confirms that the configured API key cannot place, replace, or cancel trades.</p>
-              <p className="webull-approval-note">Confirm the Webull key is limited to Account Infos and Order Query, then enable the private service gate.</p>
+            <div className="webull-state" role="status">
+              <span className="webull-eyebrow">Read-only protection</span>
+              <h2>Read-only access is not active yet.</h2>
+              <p>Portfolio Lab already has the connection details it needs. It does not implement trading or transfer actions, and it keeps Webull disconnected until its read-only safeguard is activated.</p>
+              <p className="webull-approval-note">No additional Webull setup is needed. When activation is complete, return here to verify the connection.</p>
             </div>
           ) : status && !status.connected ? (
             <div className="webull-state">

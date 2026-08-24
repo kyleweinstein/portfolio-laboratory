@@ -24,6 +24,8 @@ class AdapterConfigurationError(WebullAdapterError):
 class ReadOnlyWebullAdapter(ABC):
     """The complete brokerage surface. Trading methods are intentionally absent."""
 
+    enforcement_mode = "unverified"
+
     @abstractmethod
     def probe(self, *, live: bool = False) -> CapabilityReport:
         raise NotImplementedError
@@ -59,3 +61,10 @@ class ReadOnlyWebullAdapter(ABC):
         until: datetime | None = None,
     ) -> list[OrderRecord]:
         raise NotImplementedError
+
+
+def application_read_only_gate_enabled(*, configured: bool, adapter: object) -> bool:
+    """Require an explicit opt-in on each concrete adapter implementation."""
+    return bool(
+        configured and type(adapter).__dict__.get("enforcement_mode") == "application"
+    )

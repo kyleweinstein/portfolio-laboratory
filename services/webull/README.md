@@ -15,10 +15,11 @@ runtime token directory. Never commit them.
 - `WEBULL_APP_KEY` and `WEBULL_APP_SECRET`: approved Webull OpenAPI credentials.
 - `WEBULL_OPENAPI_TOKEN_DIR`: mounted directory used by the official SDK for its
   verified access token.
-- `WEBULL_READ_ONLY_SCOPE_CONFIRMED`: activation gate. Set to `true` only after
-  the Webull approval/key permissions have been verified to exclude order
-  placement, replacement and cancellation. The application imports no trading
-  methods, but the official SDK client itself contains them.
+- `WEBULL_READ_ONLY_ADAPTER_ENABLED`: fail-closed application activation gate.
+  Set to `true` only after reviewing that Portfolio Lab exposes account, asset,
+  activity and order-history reads only. Webull's Retail Trading API does not
+  document a separate query-only permission for individual App Keys, so this
+  enables an application-enforced boundary, not a broker-enforced key scope.
 - `WEBULL_REGION` (default `us`) and `WEBULL_API_ENDPOINT` (default
   `api.webull.com`).
 - `CASH_ACTIVITY_LOOKBACK_DAYS` (default `45`), `SYNC_INTERVAL_SECONDS`
@@ -43,8 +44,8 @@ volume.
 Mount a private persistent Railway volume at `/data/webull-token` on the API
 service only and set its `WEBULL_OPENAPI_TOKEN_DIR=/data/webull-token`. The API
 service is the only service that receives Webull credentials or token-volume
-access. Until the permission gate is confirmed, the owner dashboard reports
-**Configuration required** and does not offer a misleading verification action.
+access. Until the application adapter is enabled, the owner dashboard reports
+**Read-only activation pending** and does not offer a misleading verification action.
 Webull's first approval can wait for in-app verification for up to five minutes.
 After the gate is enabled, start it once with **Verify configured Webull account**
 and approve it in Webull. The dashboard persists the attempt stage, start time,
@@ -53,12 +54,14 @@ closed and reopened without losing status. Repeated starts reuse the active
 attempt, and an interrupted attempt becomes retryable after its seven-minute
 lease expires. The saved Webull token then survives API restarts.
 
-Before that first request, confirm in Webull's developer console that the key is
-limited to Account Infos and Order Query/read permissions. Only then set
-`WEBULL_READ_ONLY_SCOPE_CONFIRMED=true`. If Webull cannot scope the credential to
-exclude trading, leave the flag false and keep the connected feature disabled.
-Never paste the App Key, Secret or token into a browser form, repository, log or
-chat message.
+Before that first request, review the private adapter and server routes to
+confirm that they expose no order preview, placement, replacement,
+cancellation, transfer or withdrawal operation. Then set
+`WEBULL_READ_ONLY_ADAPTER_ENABLED=true`. The approved Retail App Key itself may
+retain broader Trading API authority, so keep the private service isolated,
+preserve owner-only authentication, and rotate the credential if it may have
+been exposed. Never paste the App Key, Secret or token into a browser form,
+repository, log or chat message.
 
 ## Proxy contract
 
