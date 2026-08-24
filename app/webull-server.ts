@@ -40,6 +40,14 @@ type BrowserVerification = {
   error: { code: string; message: string } | null;
 };
 
+type BrowserLastSyncAttempt = {
+  status: "success" | "error";
+  startedAt: string;
+  completedAt: string;
+  cashActivitiesComplete: boolean | null;
+  message: string | null;
+};
+
 const BROWSER_VERIFICATION_STATES = new Set<BrowserVerificationState>(["running", "succeeded", "failed", "timed_out"]);
 const BROWSER_VERIFICATION_STAGES = new Set<BrowserVerificationStage>(["starting", "verifying_access", "discovering_accounts", "syncing_account", "finalizing", "complete"]);
 const BROWSER_NEXT_ACTIONS = new Set<BrowserNextAction>(["sign_in", "start_verification", "wait", "retry_verification", "sync_account", "view_portfolio", "configure"]);
@@ -88,6 +96,38 @@ function normalizeServiceVerification(value: unknown): BrowserVerification | nul
       ? { code: errorCode.slice(0, 80), message: errorMessage.slice(0, 300) }
       : null,
   };
+}
+
+function normalizeServiceLastSyncAttempt(value: unknown): BrowserLastSyncAttempt | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const status = nullableString(record.status);
+  const startedAt = safeTimestamp(record.startedAt);
+  const completedAt = safeTimestamp(record.completedAt);
+  const cashActivitiesComplete = record.cashActivitiesComplete;
+  if ((status !== "success" && status !== "error") || !startedAt || !completedAt ||
+      (cashActivitiesComplete !== null && cashActivitiesComplete !== undefined && typeof cashActivitiesComplete !== "boolean")) {
+    return null;
+  }
+  return {
+    status,
+    startedAt,
+    completedAt,
+    cashActivitiesComplete: typeof cashActivitiesComplete === "boolean" ? cashActivitiesComplete : null,
+    message: nullableString(record.message)?.slice(0, 300) || null,
+  };
+}
+
+function normalizeServiceIssues(value: unknown): Record<string, unknown>[] {
+  return recordArray(value).map((issue, index) => {
+    const code = nullableString(issue.code) || `DATA_ISSUE_${index + 1}`;
+    return {
+      issueId: code.slice(0, 100),
+      severity: (nullableString(issue.severity) || "info").slice(0, 24),
+      title: humanizeCode(code).slice(0, 160),
+      message: nullableString(issue.message)?.slice(0, 500) || null,
+    };
+  });
 }
 
 function normalizeServiceNextAction(value: unknown): BrowserNextAction | null {
@@ -177,10 +217,12 @@ export async function webullStatusResponse(
     connected: false,
     verificationInProgress: false,
     verification: null as BrowserVerification | null,
+    lastSyncAttempt: null as BrowserLastSyncAttempt | null,
     nextAction: (enabled ? "sign_in" : "configure") as BrowserNextAction,
     accounts: [] as unknown[],
     selectedAccountId: null as string | null,
     dashboard: null as unknown,
+    issues: [] as Record<string, unknown>[],
   };
   if (!base.enabled) return jsonResponse(base);
 
@@ -262,6 +304,10 @@ export async function webullStatusResponse(
     benchmarkSeries,
   );
   const verification = normalizeServiceVerification(status?.verification);
+  const lastSyncAttempt = normalizeServiceLastSyncAttempt(status?.lastSyncAttempt);
+  const statusIssues = normalizeServiceIssues(
+    asRecord(serviceDashboard)?.issues ?? status?.issues,
+  );
   const verificationInProgress = verification
     ? verification.state === "running"
     : status?.verificationInProgress === true;
@@ -273,10 +319,12 @@ export async function webullStatusResponse(
     connected,
     verificationInProgress,
     verification,
+    lastSyncAttempt,
     nextAction,
     accounts: accounts ?? [],
     selectedAccountId: nullableString(status?.selectedAccountId),
     dashboard,
+    issues: statusIssues,
   });
 }
 
@@ -640,15 +688,7 @@ export function normalizeServiceDashboard(
     quality: "verified",
     asOf: dateValue(activity.occurredAt),
   }));
-  const issues = recordArray(dashboard.issues).map((issue, index) => {
-    const code = nullableString(issue.code) || `DATA_ISSUE_${index + 1}`;
-    return {
-      issueId: code,
-      severity: nullableString(issue.severity) || "info",
-      title: humanizeCode(code),
-      message: nullableString(issue.message),
-    };
-  });
+  const issues = normalizeServiceIssues(dashboard.issues);
   if (periods.length && !benchmarkSeries) {
     issues.push({
       issueId: "BENCHMARK_UNAVAILABLE",

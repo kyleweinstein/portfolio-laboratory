@@ -5,6 +5,7 @@ import sys
 from collections.abc import Callable
 from ipaddress import ip_address
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -15,6 +16,10 @@ _REQUEST_TIMEOUT_SECONDS = 360
 
 class ScheduledSyncTriggerError(RuntimeError):
     """A deliberately generic private-trigger failure."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__("The private Webull scheduled-sync request failed.")
+        self.category = category
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -28,7 +33,12 @@ def _open_private_request(request: Request, *, timeout: int):
 
 def _scheduled_sync_url(service_url: str) -> str:
     candidate = service_url.strip()
-    parsed = urlsplit(candidate)
+    try:
+        parsed = urlsplit(candidate)
+        # Accessing port validates malformed or out-of-range port values.
+        _ = parsed.port
+    except ValueError:
+        raise ScheduledSyncTriggerError("configuration") from None
     hostname = parsed.hostname or ""
     normalized_hostname = hostname.rstrip(".").lower()
     try:
@@ -46,9 +56,7 @@ def _scheduled_sync_url(service_url: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise ScheduledSyncTriggerError(
-            "The private Webull service URL is not configured correctly."
-        )
+        raise ScheduledSyncTriggerError("configuration")
     return f"{candidate.rstrip('/')}/v1/scheduled-sync"
 
 
@@ -60,9 +68,7 @@ def trigger_scheduled_sync(
     opener: Callable[..., Any] | None = None,
 ) -> None:
     if not internal_api_token or not owner_github_id:
-        raise ScheduledSyncTriggerError(
-            "The private Webull trigger configuration is incomplete."
-        )
+        raise ScheduledSyncTriggerError("configuration")
 
     try:
         request = Request(
@@ -80,15 +86,20 @@ def trigger_scheduled_sync(
             if status is None:
                 status = response.getcode()
             if not isinstance(status, int) or not 200 <= status < 300:
-                raise ScheduledSyncTriggerError(
-                    "The private Webull scheduled-sync request failed."
-                )
+                category = f"http_{status}" if isinstance(status, int) else "http_error"
+                raise ScheduledSyncTriggerError(category)
     except ScheduledSyncTriggerError:
         raise
-    except Exception:  # noqa: BLE001 - never expose network or HTTP exception details.
-        raise ScheduledSyncTriggerError(
-            "The private Webull scheduled-sync request failed."
-        ) from None
+    except HTTPError as exc:
+        category = f"http_{exc.code}" if 100 <= exc.code <= 599 else "http_error"
+        raise ScheduledSyncTriggerError(category) from None
+    except TimeoutError:
+        raise ScheduledSyncTriggerError("timeout") from None
+    except URLError as exc:
+        category = "timeout" if isinstance(exc.reason, TimeoutError) else "network"
+        raise ScheduledSyncTriggerError(category) from None
+    except Exception:  # noqa: BLE001 - never expose network exception details.
+        raise ScheduledSyncTriggerError("network") from None
 
 
 def main() -> int:
@@ -107,8 +118,11 @@ def main() -> int:
             internal_api_token=internal_api_token,
             owner_github_id=owner_github_id,
         )
-    except ScheduledSyncTriggerError:
-        print("Webull scheduled sync trigger failed.", file=sys.stderr)
+    except ScheduledSyncTriggerError as exc:
+        print(
+            f"Webull scheduled sync trigger failed ({exc.category}).",
+            file=sys.stderr,
+        )
         return 1
 
     print("Webull scheduled sync trigger completed.")

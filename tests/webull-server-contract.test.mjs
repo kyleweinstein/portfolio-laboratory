@@ -119,6 +119,13 @@ test("authenticated status forwards only a validated verification attempt and ne
       completedAt: null,
       error: null,
     },
+    lastSyncAttempt: {
+      status: "running",
+      startedAt: "invalid",
+      completedAt: "2026-08-20T20:04:00Z",
+      cashActivitiesComplete: "yes",
+      message: "Malformed",
+    },
     nextAction: "wait",
     accounts: [],
     selectedAccountId: null,
@@ -134,7 +141,69 @@ test("authenticated status forwards only a validated verification attempt and ne
     assert.equal(status.verification.state, "running");
     assert.equal(status.verification.stage, "verifying_access");
     assert.equal(status.verification.startedAt, "2026-08-20T20:00:00Z");
+    assert.equal(status.lastSyncAttempt, null);
     assert.equal(status.nextAction, "wait");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("connected status preserves the last sync failure and issues without inventing a dashboard", async () => {
+  const env = {
+    WEBULL_INTEGRATION_ENABLED: "true",
+    WEBULL_SERVICE_URL: "https://webull.internal/",
+    WEBULL_INTERNAL_TOKEN: "test-internal-token-long-enough",
+    GITHUB_CLIENT_ID: "client-id",
+    GITHUB_CLIENT_SECRET: "client-secret",
+    GITHUB_SESSION_SECRET: "test-session-secret-that-is-longer-than-thirty-two-bytes",
+    GITHUB_OWNER_IDS: "12345",
+  };
+  const { cookieValue } = await createGitHubSession(
+    { id: "12345", login: "portfolio-owner" },
+    getGitHubAuthConfig(env),
+  );
+  const request = new Request("https://portfolio.example/api/webull/status", {
+    headers: { cookie: `${GITHUB_SESSION_COOKIE}=${cookieValue}` },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    connected: true,
+    verificationInProgress: false,
+    verification: null,
+    lastSyncAttempt: {
+      status: "error",
+      startedAt: "2026-08-20T20:00:00Z",
+      completedAt: "2026-08-20T20:01:00Z",
+      cashActivitiesComplete: false,
+      message: "Webull cash activities are unavailable.",
+    },
+    nextAction: "sync_account",
+    accounts: [{ accountId: "account-1234", accountType: "CASH", status: "ACTIVE", currency: "USD" }],
+    selectedAccountId: "account-1234",
+    lastSyncedAt: null,
+    dashboard: {
+      portfolio: null,
+      performance: null,
+      recentActivities: [],
+      issues: [{ code: "NO_PORTFOLIO_SNAPSHOT", severity: "warning", message: "Run the first read-only sync." }],
+    },
+  });
+
+  try {
+    const response = await webullStatusResponse(request, env);
+    assert.equal(response.status, 200);
+    const status = await response.json();
+    assert.equal(status.connected, true);
+    assert.equal(status.dashboard, null);
+    assert.deepEqual(status.lastSyncAttempt, {
+      status: "error",
+      startedAt: "2026-08-20T20:00:00Z",
+      completedAt: "2026-08-20T20:01:00Z",
+      cashActivitiesComplete: false,
+      message: "Webull cash activities are unavailable.",
+    });
+    assert.equal(status.issues[0].issueId, "NO_PORTFOLIO_SNAPSHOT");
+    assert.equal(status.issues[0].message, "Run the first read-only sync.");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -152,10 +221,12 @@ test("signed-out status exposes only the sign-in action and no private attempt",
     connected: false,
     verificationInProgress: false,
     verification: null,
+    lastSyncAttempt: null,
     nextAction: "sign_in",
     accounts: [],
     selectedAccountId: null,
     dashboard: null,
+    issues: [],
   });
 });
 
@@ -191,10 +262,12 @@ test("status transport failures stay errors and preserve safe FastAPI details", 
       connected: false,
       verificationInProgress: false,
       verification: null,
+      lastSyncAttempt: null,
       nextAction: "start_verification",
       accounts: [],
       selectedAccountId: null,
       dashboard: null,
+      issues: [],
       csrfToken: session.csrfToken,
       error: "The selected account is unavailable.",
     });

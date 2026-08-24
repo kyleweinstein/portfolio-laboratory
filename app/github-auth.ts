@@ -553,7 +553,13 @@ function base64UrlDecode(value: string): Uint8Array | null {
     const padded = value.replace(/-/g, "+").replace(/_/g, "/") +
       "=".repeat((4 - (value.length % 4)) % 4);
     const binary = atob(padded);
-    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = Uint8Array.from(
+      binary,
+      (character) => character.charCodeAt(0),
+    );
+    // Reject alternate spellings whose unused trailing bits decode to the same
+    // bytes. Signed cookies use one canonical Base64URL representation.
+    return base64UrlEncode(decoded) === value ? decoded : null;
   } catch {
     return null;
   }

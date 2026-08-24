@@ -21,7 +21,9 @@ class FakeWebullAdapter(ReadOnlyWebullAdapter):
 
     def __init__(self, *, as_of: datetime | None = None) -> None:
         self.as_of = as_of or datetime(2026, 8, 20, 20, 0, tzinfo=UTC)
+        self.fail_balance = False
         self.fail_positions = False
+        self.fail_cash_activities = False
         self.calls: list[tuple[str, str | None]] = []
         self.account = BrokerageAccount(
             account_id="fake-account-001",
@@ -54,6 +56,8 @@ class FakeWebullAdapter(ReadOnlyWebullAdapter):
     def get_balance(self, account_id: str) -> BalanceSnapshot:
         self._require_account(account_id)
         self.calls.append(("get_balance", account_id))
+        if self.fail_balance:
+            raise WebullAdapterError("Fake balance endpoint failure")
         return BalanceSnapshot(
             account_id=account_id,
             as_of=self.as_of,
@@ -143,6 +147,8 @@ class FakeWebullAdapter(ReadOnlyWebullAdapter):
     ) -> list[CashActivity]:
         self._require_account(account_id)
         self.calls.append(("get_cash_activities", account_id))
+        if self.fail_cash_activities:
+            raise WebullAdapterError("Fake cash activity endpoint failure")
         values = [
             CashActivity(
                 account_id=account_id,

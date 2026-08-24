@@ -17,6 +17,8 @@ from .models import (
     PortfolioState,
     PositionSnapshot,
     StatementAnchor,
+    SyncAttempt,
+    SyncAttemptStatus,
     SyncResult,
     ValuationPoint,
     VerificationAttempt,
@@ -27,6 +29,9 @@ from .models import (
 )
 
 _VERIFICATION_LEASE = timedelta(minutes=7)
+_INCOMPLETE_CASH_ACTIVITY_COVERAGE_MESSAGE = (
+    "Cash activity coverage remains incomplete; performance remains unavailable."
+)
 
 
 class RepositoryError(RuntimeError):
@@ -63,16 +68,33 @@ class PortfolioRepository(Protocol):
         activities: list[CashActivity],
         *,
         started_at: datetime,
+        cash_activities_complete: bool,
+        cash_activity_from: datetime,
+        cash_activity_until: datetime,
+        warning: str | None = None,
     ) -> SyncResult: ...
     def record_sync_failure(
-        self, account_id: str, started_at: datetime, message: str
+        self,
+        account_id: str,
+        started_at: datetime,
+        message: str,
+        *,
+        cash_activities_complete: bool | None = None,
     ) -> None: ...
     def upsert_history(
         self,
         account: BrokerageAccount,
         activities: list[CashActivity],
         orders: list[OrderRecord],
+        *,
+        started_at: datetime,
+        cash_activities_complete: bool,
+        cash_activity_from: datetime,
+        cash_activity_until: datetime,
+        message: str | None = None,
     ) -> tuple[int, int]: ...
+    def get_latest_sync_attempt(self, account_id: str) -> SyncAttempt | None: ...
+    def get_latest_cash_activity_coverage(self, account_id: str) -> bool | None: ...
     def import_statement_anchor(self, anchor: StatementAnchor) -> StatementAnchor: ...
     def get_portfolio(self, account_id: str) -> PortfolioState | None: ...
     def get_performance_inputs(
@@ -290,14 +312,19 @@ class PostgresRepository:
                 "SELECT account_id, account_type, status, currency FROM brokerage_accounts ORDER BY account_id"
             )
             accounts = tuple(BrokerageAccount(**row) for row in cursor.fetchall())
-            cursor.execute(
-                "SELECT MAX(last_synced_at) AS last_synced_at FROM brokerage_accounts"
-            )
-            last_synced = (cursor.fetchone() or {}).get("last_synced_at")
+            selected_account_id = state["selected_account_id"]
+            if selected_account_id:
+                cursor.execute(
+                    "SELECT last_synced_at FROM brokerage_accounts WHERE account_id = %s",
+                    (selected_account_id,),
+                )
+                last_synced = (cursor.fetchone() or {}).get("last_synced_at")
+            else:
+                last_synced = None
         return ConnectionState(
             connected=bool(state["connected"]),
             accounts=accounts,
-            selected_account_id=state["selected_account_id"],
+            selected_account_id=selected_account_id,
             connected_at=state["connected_at"],
             last_synced_at=last_synced,
         )
@@ -341,6 +368,10 @@ class PostgresRepository:
         activities: list[CashActivity],
         *,
         started_at: datetime,
+        cash_activities_complete: bool,
+        cash_activity_from: datetime,
+        cash_activity_until: datetime,
+        warning: str | None = None,
     ) -> SyncResult:
         _validate_snapshot(account.account_id, balance, positions, activities)
         positions_by_id = {
@@ -358,6 +389,20 @@ class PostgresRepository:
             connection.cursor() as cursor,
         ):
             self._upsert_account(cursor, account)
+            effective_cash_coverage = self._update_cash_activity_coverage(
+                cursor,
+                account.account_id,
+                fetched_from=cash_activity_from,
+                fetched_until=cash_activity_until,
+                fetch_complete=cash_activities_complete,
+            )
+            effective_warning = (
+                warning
+                if warning
+                else _INCOMPLETE_CASH_ACTIVITY_COVERAGE_MESSAGE
+                if not effective_cash_coverage
+                else None
+            )
             cursor.execute(
                 """
                     INSERT INTO portfolio_snapshots (
@@ -409,8 +454,9 @@ class PostgresRepository:
             cursor.execute(
                 """
                     INSERT INTO sync_runs (
-                        sync_run_id, account_id, status, started_at, completed_at, snapshot_id
-                    ) VALUES (%s, %s, 'SUCCESS', %s, %s, %s)
+                        sync_run_id, account_id, status, started_at, completed_at,
+                        snapshot_id, cash_activities_complete, message
+                    ) VALUES (%s, %s, 'SUCCESS', %s, %s, %s, %s, %s)
                     """,
                 (
                     sync_run_id,
@@ -418,6 +464,8 @@ class PostgresRepository:
                     started_at,
                     completed_at,
                     snapshot_id,
+                    effective_cash_coverage,
+                    effective_warning[:500] if effective_warning else None,
                 ),
             )
             cursor.execute(
@@ -432,10 +480,17 @@ class PostgresRepository:
             positions_written=len(positions_by_id),
             cash_activities_seen=len(activities),
             cash_activities_upserted=len(activities_by_id),
+            cash_activities_complete=effective_cash_coverage,
+            warning=effective_warning,
         )
 
     def record_sync_failure(
-        self, account_id: str, started_at: datetime, message: str
+        self,
+        account_id: str,
+        started_at: datetime,
+        message: str,
+        *,
+        cash_activities_complete: bool | None = None,
     ) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -449,10 +504,18 @@ class PostgresRepository:
             cursor.execute(
                 """
                 INSERT INTO sync_runs (
-                    sync_run_id, account_id, status, started_at, completed_at, error_message
-                ) VALUES (%s, %s, 'ERROR', %s, %s, %s)
+                    sync_run_id, account_id, status, started_at, completed_at,
+                    cash_activities_complete, message
+                ) VALUES (%s, %s, 'ERROR', %s, %s, %s, %s)
                 """,
-                (str(uuid4()), account_id, started_at, utc_now(), message[:500]),
+                (
+                    str(uuid4()),
+                    account_id,
+                    started_at,
+                    utc_now(),
+                    cash_activities_complete,
+                    message[:500],
+                ),
             )
 
     def upsert_history(
@@ -460,6 +523,12 @@ class PostgresRepository:
         account: BrokerageAccount,
         activities: list[CashActivity],
         orders: list[OrderRecord],
+        *,
+        started_at: datetime,
+        cash_activities_complete: bool,
+        cash_activity_from: datetime,
+        cash_activity_until: datetime,
+        message: str | None = None,
     ) -> tuple[int, int]:
         activities_by_id = {item.external_activity_id: item for item in activities}
         orders_by_id = {item.external_order_id: item for item in orders}
@@ -469,9 +538,89 @@ class PostgresRepository:
             connection.cursor() as cursor,
         ):
             self._upsert_account(cursor, account)
+            effective_cash_coverage = self._update_cash_activity_coverage(
+                cursor,
+                account.account_id,
+                fetched_from=cash_activity_from,
+                fetched_until=cash_activity_until,
+                fetch_complete=cash_activities_complete,
+            )
+            effective_message = (
+                message
+                if message
+                else _INCOMPLETE_CASH_ACTIVITY_COVERAGE_MESSAGE
+                if not effective_cash_coverage
+                else None
+            )
             self._upsert_activities(cursor, list(activities_by_id.values()))
             self._upsert_orders(cursor, list(orders_by_id.values()))
+            cursor.execute(
+                """
+                INSERT INTO sync_runs (
+                    sync_run_id, account_id, status, started_at, completed_at,
+                    cash_activities_complete, message
+                ) VALUES (%s, %s, 'SUCCESS', %s, %s, %s, %s)
+                """,
+                (
+                    str(uuid4()),
+                    account.account_id,
+                    started_at,
+                    utc_now(),
+                    effective_cash_coverage,
+                    effective_message[:500] if effective_message else None,
+                ),
+            )
         return len(activities_by_id), len(orders_by_id)
+
+    def get_latest_sync_attempt(self, account_id: str) -> SyncAttempt | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT sync_run_id, status, started_at, completed_at,
+                       cash_activities_complete, message
+                FROM sync_runs
+                WHERE account_id = %s
+                ORDER BY completed_at DESC, sync_run_id DESC
+                LIMIT 1
+                """,
+                (account_id,),
+            )
+            row = cursor.fetchone()
+        return _sync_attempt_from_row(row) if row is not None else None
+
+    def get_latest_cash_activity_coverage(self, account_id: str) -> bool | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT cash_activity_gap_start, cash_activity_gap_end
+                FROM brokerage_accounts
+                WHERE account_id = %s
+                """,
+                (account_id,),
+            )
+            account_row = cursor.fetchone()
+            if (
+                account_row is not None
+                and account_row["cash_activity_gap_start"] is not None
+            ):
+                return False
+            cursor.execute(
+                """
+                SELECT cash_activities_complete
+                FROM sync_runs
+                WHERE account_id = %s
+                  AND cash_activities_complete IS NOT NULL
+                ORDER BY completed_at DESC, sync_run_id DESC
+                LIMIT 1
+                """,
+                (account_id,),
+            )
+            attempt_row = cursor.fetchone()
+        return (
+            bool(attempt_row["cash_activities_complete"])
+            if attempt_row is not None
+            else None
+        )
 
     def import_statement_anchor(self, anchor: StatementAnchor) -> StatementAnchor:
         with self._connect() as connection, connection.cursor() as cursor:
@@ -625,6 +774,65 @@ class PostgresRepository:
             return [_order_from_row(row) for row in cursor.fetchall()]
 
     @staticmethod
+    def _update_cash_activity_coverage(
+        cursor: psycopg.Cursor,
+        account_id: str,
+        *,
+        fetched_from: datetime,
+        fetched_until: datetime,
+        fetch_complete: bool,
+    ) -> bool:
+        if fetched_from > fetched_until:
+            raise RepositoryError("Cash activity coverage range is invalid.")
+        cursor.execute(
+            """
+            SELECT cash_activity_gap_start, cash_activity_gap_end
+            FROM brokerage_accounts
+            WHERE account_id = %s
+            FOR UPDATE
+            """,
+            (account_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RepositoryError("Cash activity coverage account was not found.")
+        gap_start = row["cash_activity_gap_start"]
+        gap_end = row["cash_activity_gap_end"]
+        if (gap_start is None) != (gap_end is None):
+            raise RepositoryError("Cash activity coverage state is invalid.")
+
+        if fetch_complete:
+            if gap_start is None:
+                return True
+            if fetched_from <= gap_start and fetched_until >= gap_end:
+                cursor.execute(
+                    """
+                    UPDATE brokerage_accounts
+                    SET cash_activity_gap_start = NULL,
+                        cash_activity_gap_end = NULL,
+                        updated_at = NOW()
+                    WHERE account_id = %s
+                    """,
+                    (account_id,),
+                )
+                return True
+            return False
+
+        merged_start = min(gap_start, fetched_from) if gap_start else fetched_from
+        merged_end = max(gap_end, fetched_until) if gap_end else fetched_until
+        cursor.execute(
+            """
+            UPDATE brokerage_accounts
+            SET cash_activity_gap_start = %s,
+                cash_activity_gap_end = %s,
+                updated_at = NOW()
+            WHERE account_id = %s
+            """,
+            (merged_start, merged_end, account_id),
+        )
+        return False
+
+    @staticmethod
     def _upsert_account(cursor: psycopg.Cursor, account: BrokerageAccount) -> None:
         cursor.execute(
             """
@@ -742,12 +950,14 @@ class MemoryRepository:
         self.accounts: dict[str, BrokerageAccount] = {}
         self.selected_account_id: str | None = None
         self.connected_at: datetime | None = None
-        self.last_synced_at: datetime | None = None
+        self.account_last_synced_at: dict[str, datetime] = {}
+        self.cash_activity_gaps: dict[str, tuple[datetime, datetime]] = {}
         self.snapshots: dict[str, list[PortfolioState]] = {}
         self.activities: dict[tuple[str, str], CashActivity] = {}
         self.orders: dict[tuple[str, str], OrderRecord] = {}
         self.anchors: dict[tuple[str, str], StatementAnchor] = {}
         self.failures: list[tuple[str, str]] = []
+        self.sync_attempts: list[tuple[str, SyncAttempt]] = []
 
     def begin_verification_attempt(self) -> tuple[VerificationAttempt, bool]:
         now = utc_now()
@@ -890,7 +1100,7 @@ class MemoryRepository:
             ),
             selected_account_id=self.selected_account_id,
             connected_at=self.connected_at,
-            last_synced_at=self.last_synced_at,
+            last_synced_at=self.account_last_synced_at.get(self.selected_account_id),
         )
 
     def select_account(self, account_id: str) -> ConnectionState:
@@ -905,12 +1115,14 @@ class MemoryRepository:
         self.connected = False
         self.selected_account_id = None
         self.connected_at = None
-        self.last_synced_at = None
+        self.account_last_synced_at.clear()
+        self.cash_activity_gaps.clear()
         self.accounts.clear()
         self.snapshots.clear()
         self.activities.clear()
         self.orders.clear()
         self.anchors.clear()
+        self.sync_attempts.clear()
 
     def commit_sync(
         self,
@@ -920,6 +1132,10 @@ class MemoryRepository:
         activities: list[CashActivity],
         *,
         started_at: datetime,
+        cash_activities_complete: bool,
+        cash_activity_from: datetime,
+        cash_activity_until: datetime,
+        warning: str | None = None,
     ) -> SyncResult:
         _validate_snapshot(account.account_id, balance, positions, activities)
         snapshot_id = str(uuid4())
@@ -937,9 +1153,37 @@ class MemoryRepository:
             self.activities[(activity.account_id, activity.external_activity_id)] = (
                 activity
             )
-        self.last_synced_at = balance.as_of
+        effective_cash_coverage = self._update_cash_activity_coverage(
+            account.account_id,
+            fetched_from=cash_activity_from,
+            fetched_until=cash_activity_until,
+            fetch_complete=cash_activities_complete,
+        )
+        effective_warning = (
+            warning
+            if warning
+            else _INCOMPLETE_CASH_ACTIVITY_COVERAGE_MESSAGE
+            if not effective_cash_coverage
+            else None
+        )
+        self.account_last_synced_at[account.account_id] = balance.as_of
+        completed_at = utc_now()
+        sync_run_id = str(uuid4())
+        self.sync_attempts.append(
+            (
+                account.account_id,
+                SyncAttempt(
+                    sync_run_id=sync_run_id,
+                    status=SyncAttemptStatus.SUCCESS,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    cash_activities_complete=effective_cash_coverage,
+                    message=effective_warning,
+                ),
+            )
+        )
         return SyncResult(
-            sync_run_id=str(uuid4()),
+            sync_run_id=sync_run_id,
             snapshot_id=snapshot_id,
             account_id=account.account_id,
             captured_at=balance.as_of,
@@ -948,27 +1192,128 @@ class MemoryRepository:
             cash_activities_upserted=len(
                 {item.external_activity_id for item in activities}
             ),
+            cash_activities_complete=effective_cash_coverage,
+            warning=effective_warning,
         )
 
     def record_sync_failure(
-        self, account_id: str, started_at: datetime, message: str
+        self,
+        account_id: str,
+        started_at: datetime,
+        message: str,
+        *,
+        cash_activities_complete: bool | None = None,
     ) -> None:
         self.failures.append((account_id, message))
+        self.sync_attempts.append(
+            (
+                account_id,
+                SyncAttempt(
+                    sync_run_id=str(uuid4()),
+                    status=SyncAttemptStatus.ERROR,
+                    started_at=started_at,
+                    completed_at=utc_now(),
+                    cash_activities_complete=cash_activities_complete,
+                    message=message[:500],
+                ),
+            )
+        )
 
     def upsert_history(
         self,
         account: BrokerageAccount,
         activities: list[CashActivity],
         orders: list[OrderRecord],
+        *,
+        started_at: datetime,
+        cash_activities_complete: bool,
+        cash_activity_from: datetime,
+        cash_activity_until: datetime,
+        message: str | None = None,
     ) -> tuple[int, int]:
         self.accounts[account.account_id] = account
         for item in activities:
             self.activities[(item.account_id, item.external_activity_id)] = item
         for item in orders:
             self.orders[(item.account_id, item.external_order_id)] = item
+        effective_cash_coverage = self._update_cash_activity_coverage(
+            account.account_id,
+            fetched_from=cash_activity_from,
+            fetched_until=cash_activity_until,
+            fetch_complete=cash_activities_complete,
+        )
+        effective_message = (
+            message
+            if message
+            else _INCOMPLETE_CASH_ACTIVITY_COVERAGE_MESSAGE
+            if not effective_cash_coverage
+            else None
+        )
+        self.sync_attempts.append(
+            (
+                account.account_id,
+                SyncAttempt(
+                    sync_run_id=str(uuid4()),
+                    status=SyncAttemptStatus.SUCCESS,
+                    started_at=started_at,
+                    completed_at=utc_now(),
+                    cash_activities_complete=effective_cash_coverage,
+                    message=effective_message,
+                ),
+            )
+        )
         return len({item.external_activity_id for item in activities}), len(
             {item.external_order_id for item in orders}
         )
+
+    def get_latest_sync_attempt(self, account_id: str) -> SyncAttempt | None:
+        return next(
+            (
+                attempt
+                for stored_account, attempt in reversed(self.sync_attempts)
+                if stored_account == account_id
+            ),
+            None,
+        )
+
+    def get_latest_cash_activity_coverage(self, account_id: str) -> bool | None:
+        if account_id in self.cash_activity_gaps:
+            return False
+        return next(
+            (
+                attempt.cash_activities_complete
+                for stored_account, attempt in reversed(self.sync_attempts)
+                if stored_account == account_id
+                and attempt.cash_activities_complete is not None
+            ),
+            None,
+        )
+
+    def _update_cash_activity_coverage(
+        self,
+        account_id: str,
+        *,
+        fetched_from: datetime,
+        fetched_until: datetime,
+        fetch_complete: bool,
+    ) -> bool:
+        if fetched_from > fetched_until:
+            raise RepositoryError("Cash activity coverage range is invalid.")
+        gap = self.cash_activity_gaps.get(account_id)
+        if fetch_complete:
+            if gap is None:
+                return True
+            if fetched_from <= gap[0] and fetched_until >= gap[1]:
+                del self.cash_activity_gaps[account_id]
+                return True
+            return False
+
+        gap_start, gap_end = gap or (fetched_from, fetched_until)
+        self.cash_activity_gaps[account_id] = (
+            min(gap_start, fetched_from),
+            max(gap_end, fetched_until),
+        )
+        return False
 
     def import_statement_anchor(self, anchor: StatementAnchor) -> StatementAnchor:
         if anchor.account_id not in self.accounts:
@@ -1074,6 +1419,17 @@ def _verification_from_row(row: dict) -> VerificationAttempt:
         lease_expires_at=row["lease_expires_at"],
         completed_at=row.get("completed_at"),
         error=error,
+    )
+
+
+def _sync_attempt_from_row(row: dict) -> SyncAttempt:
+    return SyncAttempt(
+        sync_run_id=str(row["sync_run_id"]),
+        status=SyncAttemptStatus[str(row["status"]).upper()],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        cash_activities_complete=row.get("cash_activities_complete"),
+        message=str(row["message"])[:500] if row.get("message") else None,
     )
 
 

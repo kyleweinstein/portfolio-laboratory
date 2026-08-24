@@ -1,3 +1,5 @@
+from urllib.error import HTTPError
+
 import pytest
 
 from webull_service import cron_trigger
@@ -97,7 +99,51 @@ def test_main_reports_network_failure_without_sensitive_details(
     assert cron_trigger.main() == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "Webull scheduled sync trigger failed.\n"
+    assert captured.err == "Webull scheduled sync trigger failed (network).\n"
+
+
+def test_main_reports_only_sanitized_http_status(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cron_trigger, "is_scheduled_sync_window", lambda: True)
+    monkeypatch.setenv("WEBULL_SERVICE_URL", "http://webull-api.railway.internal:8000")
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "do-not-log-this-token")
+    monkeypatch.setenv("PORTFOLIO_OWNER_GITHUB_ID", "sensitive-owner-id")
+
+    def fail_request(request, **_kwargs):
+        raise HTTPError(
+            request.full_url,
+            502,
+            "private-upstream-detail",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr(cron_trigger, "_open_private_request", fail_request)
+
+    assert cron_trigger.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Webull scheduled sync trigger failed (http_502).\n"
+    assert "private-upstream-detail" not in captured.err
+    assert "do-not-log-this-token" not in captured.err
+
+
+def test_main_distinguishes_timeout_without_logging_details(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cron_trigger, "is_scheduled_sync_window", lambda: True)
+    monkeypatch.setenv("WEBULL_SERVICE_URL", "http://webull-api.railway.internal:8000")
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "do-not-log-this-token")
+    monkeypatch.setenv("PORTFOLIO_OWNER_GITHUB_ID", "sensitive-owner-id")
+
+    def time_out(*_args, **_kwargs):
+        raise TimeoutError("private-timeout-detail")
+
+    monkeypatch.setattr(cron_trigger, "_open_private_request", time_out)
+
+    assert cron_trigger.main() == 1
+    assert capsys.readouterr().err == (
+        "Webull scheduled sync trigger failed (timeout).\n"
+    )
 
 
 def test_main_rejects_incomplete_configuration_without_network(
@@ -114,4 +160,6 @@ def test_main_rejects_incomplete_configuration_without_network(
     monkeypatch.setattr(cron_trigger, "_open_private_request", fail_if_called)
 
     assert cron_trigger.main() == 1
-    assert capsys.readouterr().err == "Webull scheduled sync trigger failed.\n"
+    assert capsys.readouterr().err == (
+        "Webull scheduled sync trigger failed (configuration).\n"
+    )
