@@ -43,6 +43,8 @@ test("client analysis uses explicit snapshots, worker analytics, bounded directi
   assert.match(source, /Analyze portfolio/);
   assert.match(source, /<WebullDashboard/);
   assert.match(source, /onAnalyzeCurrentHoldings={useWebullHoldings}/);
+  assert.match(source, /function useWebullHoldings[\s\S]*?changePortfolioSource\("manual"\)/);
+  assert.doesNotMatch(source, /setPortfolioSource/);
   assert.match(source, /Changes not analyzed/);
   assert.match(source, /new Worker\(new URL\("\.\/analytics\.worker\.ts"/);
   assert.match(source, /\/api\/market\/batch/);

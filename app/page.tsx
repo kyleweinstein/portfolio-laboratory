@@ -370,7 +370,7 @@ function App() {
     }
     setHoldings(nextHoldings);
     setOptimized(null);
-    setPortfolioSource("manual");
+    changePortfolioSource("manual");
     setImportNotice({
       type: "success",
       message: `${nextHoldings.length} eligible Webull holding${nextHoldings.length === 1 ? "" : "s"} copied into the draft. Select Analyze portfolio when you are ready.`,
