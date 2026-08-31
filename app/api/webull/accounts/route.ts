@@ -1,10 +1,5 @@
-import {
-  authorizeWebullOwner,
-  proxyWebullJson,
-} from "../../../webull-server";
+import { jsonResponse } from "../../../webull-server";
 
-export async function GET(request: Request) {
-  const access = await authorizeWebullOwner(request);
-  if (!access.ok) return access.response;
-  return proxyWebullJson("/accounts", access.session);
+export async function GET() {
+  return jsonResponse({ error: "Use the redacted Webull status endpoint." }, 404);
 }

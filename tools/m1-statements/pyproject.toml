@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portfolio-lab-m1-statements"
+version = "0.2.0"
+description = "Private M1/Apex statement backfill tooling for Portfolio Lab"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=45,<48",
+  "pypdf>=6,<7",
+]
+
+[project.scripts]
+portfolio-lab-m1-statements = "m1_statements.cli:main"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["m1_statements*"]

@@ -49,39 +49,55 @@ Rebalancing can add, reduce, or have no effect on return. Its outcome depends on
 
 This is an educational analytics tool, not investment, tax, accounting, or legal advice. Verify source data and methodology with a qualified provider before making financial decisions.
 
-## Owner-only Webull connection
+## Multi-broker publishing
 
-The Railway deployment can add a private, application-level read-only Webull
-account view while
-leaving every manual portfolio feature public. The browser talks only to
-authenticated Vinext routes. Those routes proxy a private FastAPI service backed
-by PostgreSQL; Webull credentials, access tokens, and full account payloads never
-enter the browser bundle or repository.
+The Railway deployment adds a privacy-first publication layer around the manual
+laboratory. GitHub owner authentication protects broker connections, sync,
+settings, privacy preview, and publication. Discord OAuth protects the follower
+gallery at `/portfolios` and verifies membership in one configured server every
+five minutes. `/manage` and follower access are separate authorization
+boundaries.
 
-The connected view preserves source boundaries:
+One selected brokerage account becomes one independently titled portfolio card.
+Cards show a percentage-only performance chart, YTD return, provider,
+performance-through date, and quality. Details show actual cash-flow-adjusted
+performance and a stored, read-only version of the manual laboratory's risk,
+classification, direction, correlation, rebalance, and optimization outputs.
 
-- Current net liquidation value, cash, market value, day P&L, positions, basis,
-  and unrealized P&L are displayed as Webull-reported values.
-- Historical returns are Portfolio Lab calculations from atomic post-close Webull
-  snapshots and external cash activities. They are labeled estimated until the
-  period has complete, reconciled coverage.
-- Orders are never interpreted as deposits or withdrawals. Cash, options, crypto,
-  shorts, and other unsupported assets remain in account value but are listed as
-  excluded from the long-only analytics sleeve.
-- `Analyze current holdings` copies only eligible positive stocks and ETFs into
-  the editable manual draft and never starts analysis automatically.
+Follower responses are built from an allowlisted publication projection. They
+may contain only:
 
-The feature is off unless `WEBULL_INTEGRATION_ENABLED=true`. Activation also
-requires a GitHub OAuth app, an allowlisted numeric owner ID, a private internal
-token, Railway Postgres, the approved Webull App Key/Secret, a persistent SDK
-token volume, and confirmation that the broker credential excludes trading
-permissions. See
-[`services/webull/README.md`](services/webull/README.md) and the checked-in
-`.env.example` files for the complete runtime contract. No trading methods are
-implemented.
+- percentage return and benchmark series;
+- signed allocation weights, including negative `Cash / Margin` when the account
+  is borrowing;
+- percentage-only gross, net, and analytical-sleeve exposure;
+- optional average cost per share and unrealized return percentage; and
+- privacy-safe modeled analytics.
 
-The owner dashboard exposes a durable verification record rather than a
-transient spinner. It reports the current stage, timestamps, terminal error or
-success, and the exact next action after reloads, service restarts, or duplicate
-clicks. Broker access remains unavailable—and the Verify action remains
-hidden—until the private read-only permission gate is explicitly confirmed.
+Account balances, account identifiers, quantities, current position values, cash
+dollar amounts, total cost basis, dollar P&L, contributions, and raw activities
+never enter follower JSON, HTML, SVG, ARIA text, browser storage, or caches.
+Average cost per share is the sole permitted dollar-denominated display field.
+Raw broker values remain private in PostgreSQL because they are required to
+derive weights and performance.
+
+Webull remains supported through the approved Retail Trading API. M1 Finance uses
+Plaid Investments with Link, encrypted Item tokens, signed webhooks, holdings,
+and optional investment transactions. Schwab's provider-neutral OAuth,
+throttling, balance, position, and transaction mapping is scaffolded but its live
+connector is disabled. None of the supported adapter interfaces expose trading,
+transfer, or money-movement operations.
+
+Historical returns are Portfolio Lab calculations from reconciled after-close
+account-value snapshots and external cash activities. Monthly M1 statements can
+provide private reconciliation anchors through the local encrypted statement
+tool. Publication is withheld when cash-flow coverage, snapshot timing, signed
+weights, statement totals, or required market history do not reconcile. A failed
+sync or analysis leaves the preceding good public revision active.
+
+All new capabilities are fail-closed behind independent feature flags. The Sites
+copy remains manual-only; authenticated broker and follower experiences run on
+Railway. See [`services/webull/README.md`](services/webull/README.md), the two
+checked-in `.env.example` files, and
+[`tools/m1-statements/README.md`](tools/m1-statements/README.md) for the private
+runtime and operator contracts.

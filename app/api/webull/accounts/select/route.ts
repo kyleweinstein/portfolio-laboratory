@@ -4,6 +4,7 @@ import {
   proxyWebullJson,
   readJsonBody,
   requestBodyErrorResponse,
+  resolveWebullAccountReference,
   webullStatusResponse,
 } from "../../../../webull-server";
 
@@ -12,11 +13,15 @@ export async function POST(request: Request) {
   if (!access.ok) return access.response;
   try {
     const body = await readJsonBody(request, { required: true });
-    const accountId = body.accountId;
+    const accountRef = body.accountRef;
     if (
-      typeof accountId !== "string" ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(accountId)
+      typeof accountRef !== "string" ||
+      !/^wbr_[A-Za-z0-9_-]{24,64}$/.test(accountRef)
     ) {
+      return jsonResponse({ error: "Select a valid Webull account." }, 400);
+    }
+    const accountId = await resolveWebullAccountReference(accountRef, access.session);
+    if (!accountId) {
       return jsonResponse({ error: "Select a valid Webull account." }, 400);
     }
     const response = await proxyWebullJson("/accounts/select", access.session, {

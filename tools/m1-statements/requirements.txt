@@ -1,0 +1,2 @@
+cryptography>=45,<48
+pypdf>=6,<7

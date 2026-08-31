@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-lab.local/schemas/m1-statement-backfill-v2.json",
+  "title": "Portfolio Lab private M1 statement backfill bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "batchId",
+    "generatedAt",
+    "accountHandle",
+    "sources",
+    "anchors",
+    "externalFlows",
+    "validation"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "portfolio-lab.m1-statement-backfill.v2" },
+    "batchId": { "type": "string", "format": "uuid" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "accountHandle": { "$ref": "#/$defs/accountHandle" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "provider", "parserVersion", "pageCount", "statementStart", "statementEnd", "accountFingerprint"],
+        "properties": {
+          "sourceId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+          "provider": { "enum": ["m1", "apex"] },
+          "parserVersion": { "type": "string" },
+          "pageCount": { "type": "integer", "minimum": 1 },
+          "statementStart": { "type": "string", "format": "date" },
+          "statementEnd": { "type": "string", "format": "date" },
+          "accountFingerprint": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accountHandle", "sourceId", "date", "currency", "netLiquidationValue", "cashBalance", "marginDebitBalance", "signedCashBalance", "quality"],
+        "properties": {
+          "accountHandle": { "$ref": "#/$defs/accountHandle" },
+          "sourceId": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "currency": { "const": "USD" },
+          "netLiquidationValue": { "$ref": "#/$defs/decimal" },
+          "cashBalance": { "oneOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+          "marginDebitBalance": { "oneOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+          "signedCashBalance": { "oneOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+          "quality": { "const": "statement_reconciled" }
+        }
+      }
+    },
+    "externalFlows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accountHandle", "sourceId", "sequence", "date", "kind", "amount", "currency", "valuationStatus", "evidence"],
+        "properties": {
+          "accountHandle": { "$ref": "#/$defs/accountHandle" },
+          "sourceId": { "type": "string" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "date": { "type": "string", "format": "date" },
+          "kind": { "enum": ["deposit", "withdrawal", "security_transfer_in", "security_transfer_out", "security_transfer_unknown"] },
+          "amount": { "oneOf": [{ "$ref": "#/$defs/decimal" }, { "type": "null" }] },
+          "currency": { "const": "USD" },
+          "valuationStatus": { "enum": ["reported", "unavailable"] },
+          "evidence": { "const": "statement_activity" }
+        }
+      }
+    },
+    "validation": { "type": "object" }
+  },
+  "$defs": {
+    "accountHandle": {
+      "type": "string",
+      "pattern": "^(?=.*[A-Za-z_-])[A-Za-z0-9](?:[A-Za-z0-9_-]{6,62}[A-Za-z0-9])$"
+    },
+    "decimal": { "type": "string", "pattern": "^-?\\d+\\.\\d{2}$" }
+  }
+}

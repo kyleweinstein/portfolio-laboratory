@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from .adapters.base import ReadOnlyWebullAdapter, WebullAdapterError
+from .adapters.base import (
+    BrokerAdapterError,
+    ReadOnlyBrokerAdapter,
+    WebullAdapterError,
+)
 from .models import (
     BackfillResult,
     BrokerageAccount,
@@ -34,7 +38,7 @@ PERSISTENCE_FAILURE = "Portfolio snapshot persistence failed."
 class SyncService:
     def __init__(
         self,
-        adapter: ReadOnlyWebullAdapter,
+        adapter: ReadOnlyBrokerAdapter,
         repository: PortfolioRepository,
         *,
         cash_activity_lookback_days: int = 45,
@@ -91,7 +95,7 @@ class SyncService:
                     since=cash_activity_from,
                     until=cash_activity_until,
                 )
-            except WebullAdapterError:
+            except BrokerAdapterError:
                 activities = []
                 cash_activities_complete = False
                 warning = CASH_ACTIVITY_WARNING
@@ -114,8 +118,12 @@ class SyncService:
                 )
             except Exception:  # noqa: BLE001 - persistence failure must not mask root failure.
                 logger.error("Unable to persist the Webull sync failure.")
-            if isinstance(exc, WebullAdapterError):
-                raise WebullAdapterError(failure_message) from None
+            if isinstance(exc, BrokerAdapterError):
+                if isinstance(exc, WebullAdapterError):
+                    raise WebullAdapterError(failure_message) from None
+                raise BrokerAdapterError(
+                    f"{self.adapter.provider.value} read-only synchronization failed."
+                ) from None
             raise
 
     def sync_selected(self) -> SyncResult:
@@ -129,8 +137,12 @@ class SyncService:
     def sync_all(self) -> list[SyncResult]:
         try:
             accounts = self.adapter.list_accounts()
-        except WebullAdapterError:
-            raise WebullAdapterError(ACCOUNT_LIST_FAILURE) from None
+        except BrokerAdapterError:
+            if self.adapter.provider.value == "webull":
+                raise WebullAdapterError(ACCOUNT_LIST_FAILURE) from None
+            raise BrokerAdapterError(
+                f"{self.adapter.provider.value} account list request failed."
+            ) from None
         self.repository.connect_accounts(accounts)
         results: list[SyncResult] = []
         error_count = 0
@@ -140,7 +152,9 @@ class SyncService:
             except Exception:  # noqa: BLE001 - one account must not stop the remaining syncs.
                 error_count += 1
         if error_count:
-            raise WebullAdapterError("One or more Webull account snapshots failed.")
+            if self.adapter.provider.value == "webull":
+                raise WebullAdapterError("One or more Webull account snapshots failed.")
+            raise BrokerAdapterError("One or more brokerage account snapshots failed.")
         return results
 
     def backfill(self, account_id: str, *, days: int) -> BackfillResult:
@@ -150,8 +164,12 @@ class SyncService:
         since = until - timedelta(days=requested_days)
         try:
             accounts = self.adapter.list_accounts()
-        except WebullAdapterError:
-            raise WebullAdapterError(ACCOUNT_LIST_FAILURE) from None
+        except BrokerAdapterError:
+            if self.adapter.provider.value == "webull":
+                raise WebullAdapterError(ACCOUNT_LIST_FAILURE) from None
+            raise BrokerAdapterError(
+                f"{self.adapter.provider.value} account list request failed."
+            ) from None
         account = next(
             (item for item in accounts if item.account_id == account_id), None
         )
@@ -166,7 +184,7 @@ class SyncService:
             activities = self.adapter.get_cash_activities(
                 account_id, since=since, until=until
             )
-        except WebullAdapterError:
+        except BrokerAdapterError:
             activities = []
             cash_activities_available = False
             warnings.append(CASH_ACTIVITY_BACKFILL_WARNING)
@@ -175,7 +193,7 @@ class SyncService:
             orders = self.adapter.get_order_history(
                 account_id, since=since, until=until
             )
-        except WebullAdapterError:
+        except BrokerAdapterError:
             orders = []
             order_history_available = False
             warnings.append(ORDER_HISTORY_WARNING)

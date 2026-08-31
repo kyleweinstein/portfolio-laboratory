@@ -1,6 +1,7 @@
 import {
   type Environment,
   type GitHubSession,
+  getGitHubAuthConfig,
   readGitHubSession,
   validateMutationRequest,
 } from "./github-auth.ts";
@@ -46,6 +47,12 @@ type BrowserLastSyncAttempt = {
   completedAt: string;
   cashActivitiesComplete: boolean | null;
   message: string | null;
+};
+
+type ServiceAccountProjection = {
+  accountId: string;
+  label: string;
+  accountType: string;
 };
 
 const BROWSER_VERIFICATION_STATES = new Set<BrowserVerificationState>(["running", "succeeded", "failed", "timed_out"]);
@@ -220,7 +227,7 @@ export async function webullStatusResponse(
     lastSyncAttempt: null as BrowserLastSyncAttempt | null,
     nextAction: (enabled ? "sign_in" : "configure") as BrowserNextAction,
     accounts: [] as unknown[],
-    selectedAccountId: null as string | null,
+    selectedAccountRef: null as string | null,
     dashboard: null as unknown,
     issues: [] as Record<string, unknown>[],
   };
@@ -266,31 +273,29 @@ export async function webullStatusResponse(
 
   const status = asRecord(serviceStatus.data);
   const connected = status?.connected === true;
-  let accounts = Array.isArray(status?.accounts)
+  let serviceAccounts = Array.isArray(status?.accounts)
     ? normalizeServiceAccounts(status.accounts)
     : null;
   let serviceDashboard = status && "dashboard" in status ? status.dashboard : null;
 
-  if (!accounts) {
+  if (!serviceAccounts) {
     const result = await optionalServiceCall("/accounts", session, env);
     if (result?.ok) {
       const value = asRecord(result.data);
       const candidate = Array.isArray(value?.accounts) ? value.accounts : result.data;
-      accounts = Array.isArray(candidate)
+      serviceAccounts = Array.isArray(candidate)
         ? normalizeServiceAccounts(candidate)
         : [];
     }
   }
 
   if (connected && serviceDashboard === null) {
-    const [portfolio, activities, issues] = await Promise.all([
+    const [portfolio, issues] = await Promise.all([
       optionalServiceCall("/portfolio", session, env),
-      optionalServiceCall("/activities?limit=25", session, env),
       optionalServiceCall("/issues", session, env),
     ]);
     serviceDashboard = {
       portfolio: portfolio?.ok ? redactSensitiveFields(portfolio.data) : null,
-      recentActivities: activities?.ok ? activitiesFromService(activities.data) : [],
       issues: issues?.ok ? redactSensitiveFields(issues.data) : null,
     };
   }
@@ -313,6 +318,11 @@ export async function webullStatusResponse(
     : status?.verificationInProgress === true;
   const nextAction = normalizeServiceNextAction(status?.nextAction)
     ?? deriveAuthenticatedNextAction(connected, dashboard, verification);
+  const accounts = await projectServiceAccounts(serviceAccounts ?? [], env);
+  const selectedRawAccountId = nullableString(status?.selectedAccountId);
+  const selectedAccountRef = selectedRawAccountId
+    ? await webullAccountReference(selectedRawAccountId, env)
+    : accounts[0]?.accountRef ?? null;
 
   return jsonResponse({
     ...authenticatedBase,
@@ -321,11 +331,36 @@ export async function webullStatusResponse(
     verification,
     lastSyncAttempt,
     nextAction,
-    accounts: accounts ?? [],
-    selectedAccountId: nullableString(status?.selectedAccountId),
+    accounts,
+    selectedAccountRef,
     dashboard,
     issues: statusIssues,
   });
+}
+
+/** Resolve an opaque browser reference without ever accepting a broker account ID. */
+export async function resolveWebullAccountReference(
+  accountRef: string,
+  session: GitHubSession,
+  env: Environment = runtimeEnvironment(),
+): Promise<string | null> {
+  if (!/^wbr_[A-Za-z0-9_-]{24,64}$/.test(accountRef)) return null;
+  const result = await callWebullService(
+    "/accounts",
+    session,
+    { method: "GET" },
+    env,
+  );
+  if (!result.ok) return null;
+  const record = asRecord(result.data);
+  const candidate = Array.isArray(record?.accounts) ? record.accounts : result.data;
+  const accounts = Array.isArray(candidate) ? normalizeServiceAccounts(candidate) : [];
+  for (const account of accounts) {
+    if (await webullAccountReference(account.accountId, env) === accountRef) {
+      return account.accountId;
+    }
+  }
+  return null;
 }
 
 export async function proxyWebullJson(
@@ -536,7 +571,7 @@ function serviceErrorMessage(result: ServiceResult): string {
   return "The Webull service could not complete the request.";
 }
 
-function normalizeServiceAccounts(value: unknown[]): Record<string, unknown>[] {
+function normalizeServiceAccounts(value: unknown[]): ServiceAccountProjection[] {
   return value.flatMap((item) => {
     const account = asRecord(item);
     const accountId = nullableString(account?.accountId);
@@ -545,17 +580,41 @@ function normalizeServiceAccounts(value: unknown[]): Record<string, unknown>[] {
     return [{
       accountId,
       label: `Webull ${accountType.toLowerCase() === "unknown" ? "account" : accountType.toLowerCase()}`,
-      maskedIdentifier: `••••${accountId.slice(-4)}`,
       accountType,
-      currency: nullableString(account?.currency) || "USD",
     }];
   });
 }
 
-function activitiesFromService(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value;
-  const record = asRecord(value);
-  return Array.isArray(record?.activities) ? record.activities : [];
+async function projectServiceAccounts(
+  accounts: readonly ServiceAccountProjection[],
+  env: Environment,
+): Promise<Record<string, unknown>[]> {
+  return Promise.all(accounts.map(async (account) => ({
+    accountRef: await webullAccountReference(account.accountId, env),
+    label: account.label,
+    accountType: account.accountType,
+  })));
+}
+
+async function webullAccountReference(
+  accountId: string,
+  env: Environment,
+): Promise<string> {
+  const secret = getGitHubAuthConfig(env).sessionSecret;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(`portfolio-lab:webull-account-ref:v1:${accountId}`),
+  ));
+  const reference = Array.from(signature.slice(0, 18), (value) => String.fromCharCode(value)).join("");
+  return `wbr_${btoa(reference).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")}`;
 }
 
 function configuredBenchmark(env: Environment): string {
@@ -597,13 +656,14 @@ export function normalizeServiceDashboard(
   if (!dashboard || !accountId || !balance) return null;
 
   const asOf = dateValue(balance.asOf) || lastSyncedAt;
-  const currency = nullableString(balance.currency) || nullableString(account?.currency) || "USD";
   const equity = numberValue(balance.equity);
   const positions = recordArray(portfolio?.positions);
   const eligibleMarketValue = positions.reduce((sum, position) => {
     return isEligiblePosition(position) ? sum + Math.max(0, numberValue(position.marketValue) ?? 0) : sum;
   }, 0);
-  const analyticsCoverage = equity && equity !== 0 ? eligibleMarketValue / equity : null;
+  const weightDenominator = equity !== null && equity > 0 ? equity : null;
+  const validWeightDenominator = weightDenominator !== null;
+  const analyticsCoverage = weightDenominator !== null ? eligibleMarketValue / weightDenominator : null;
 
   const performance = asRecord(dashboard.performance);
   const periods = recordArray(performance?.periods);
@@ -611,12 +671,6 @@ export function normalizeServiceDashboard(
   const end = dateValue(performance?.end);
   const timeWeightedReturn = numberValue(performance?.timeWeightedReturn);
   const moneyWeightedReturn = numberValue(performance?.moneyWeightedReturn);
-  const netExternalFlow = numberValue(performance?.netExternalFlow);
-  const beginningValue = numberValue(performance?.beginningValue);
-  const endingValue = numberValue(performance?.endingValue);
-  const investmentGain = beginningValue !== null && endingValue !== null && netExternalFlow !== null
-    ? endingValue - beginningValue - netExternalFlow
-    : null;
   const historicalQuality = nullableString(performance?.quality) || (periods.length ? "estimated" : "unavailable");
   const historicalThrough = end || null;
 
@@ -625,18 +679,7 @@ export function normalizeServiceDashboard(
   const excessReturn = timeWeightedReturn !== null && benchmarkReturn !== null && benchmarkReturn > -1
     ? (1 + timeWeightedReturn) / (1 + benchmarkReturn) - 1
     : null;
-  const currentMetric = (metricValue: unknown, label: string) => sourcedMetric(
-    metricValue,
-    label,
-    "Webull reported",
-    "verified",
-    asOf,
-    asOf,
-    "Point-in-time value returned by Webull OpenAPI.",
-    "currency",
-    currency,
-  );
-  const performanceMetric = (metricValue: unknown, label: string, unit: "currency" | "percent") => sourcedMetric(
+  const performanceMetric = (metricValue: unknown, label: string) => sourcedMetric(
     metricValue,
     label,
     "Portfolio Lab computed",
@@ -644,24 +687,26 @@ export function normalizeServiceDashboard(
     null,
     historicalThrough,
     "Daily cash-flow-adjusted Modified Dietz returns geometrically linked from reconciled account-value observations.",
-    unit,
-    currency,
+    "percent",
   );
 
-  const holdings = positions.map((position, index) => {
+  const securityHoldings = positions.map((position) => {
     const eligible = isEligiblePosition(position);
     const marketValue = numberValue(position.marketValue);
     const instrumentType = nullableString(position.instrumentType) || "UNKNOWN";
+    const averageCost = numberValue(position.averageCost);
+    const lastPrice = numberValue(position.lastPrice);
+    const returnPercent = averageCost !== null && averageCost > 0 && lastPrice !== null
+      ? lastPrice / averageCost - 1
+      : null;
     return {
-      positionId: nullableString(position.externalPositionId) || `${accountId}-${index}`,
+      kind: "security",
       symbol: nullableString(position.symbol) || "UNKNOWN",
+      name: nullableString(position.name),
       instrumentType,
-      quantity: numberValue(position.quantity),
-      marketValue,
-      weight: marketValue !== null && equity && equity !== 0 ? marketValue / equity : null,
-      currency: nullableString(position.currency) || currency,
-      costBasis: numberValue(position.costBasis),
-      unrealizedProfitLoss: numberValue(position.unrealizedProfitLoss),
+      weight: marketValue !== null && weightDenominator !== null ? marketValue / weightDenominator : null,
+      costBasisPerShare: averageCost,
+      returnPercent,
       eligibleForAnalysis: eligible,
       exclusionReason: eligible ? null : exclusionReason(position),
       source: "Webull reported",
@@ -669,25 +714,53 @@ export function normalizeServiceDashboard(
       asOf,
     };
   });
-  const exclusions = holdings.filter((holding) => !holding.eligibleForAnalysis).map((holding) => ({
+  const positionWeight = securityHoldings.reduce((sum, holding) => sum + (numberValue(holding.weight) ?? 0), 0);
+  const cashValue = numberValue(balance.cash);
+  const cashWeight = cashValue !== null && weightDenominator !== null ? cashValue / weightDenominator : null;
+  const residualWeight = validWeightDenominator && cashWeight !== null
+    ? 1 - positionWeight - cashWeight
+    : null;
+  const holdings = [
+    ...securityHoldings,
+    {
+      kind: "cash_margin",
+      symbol: "USD",
+      name: "Cash / Margin",
+      instrumentType: "CASH",
+      weight: cashWeight,
+      costBasisPerShare: null,
+      returnPercent: null,
+      eligibleForAnalysis: false,
+      exclusionReason: "Cash and margin balances are excluded from correlation and long-only optimization.",
+      source: "Webull reported",
+      quality: cashWeight === null ? "unavailable" : "verified",
+      asOf,
+    },
+    ...(residualWeight !== null && Math.abs(residualWeight) > 0.001 ? [{
+      kind: "other",
+      symbol: "OTHER",
+      name: "Other assets / liabilities",
+      instrumentType: "OTHER",
+      weight: residualWeight,
+      costBasisPerShare: null,
+      returnPercent: null,
+      eligibleForAnalysis: false,
+      exclusionReason: "Broker-reported account value did not fully reconcile to positions and cash.",
+      source: "Portfolio Lab computed",
+      quality: "partial",
+      asOf,
+    }] : []),
+  ];
+  const exclusions = securityHoldings.filter((holding) => !holding.eligibleForAnalysis).map((holding) => ({
     symbol: holding.symbol,
     instrumentType: holding.instrumentType,
-    marketValue: holding.marketValue,
-    currency: holding.currency,
+    weight: holding.weight,
     reason: holding.exclusionReason,
   }));
-  const activities = recordArray(dashboard.recentActivities).map((activity, index) => ({
-    activityId: nullableString(activity.externalActivityId) || `${accountId}-activity-${index}`,
-    date: dateValue(activity.occurredAt) || asOf || "",
-    type: nullableString(activity.activityType) || "OTHER",
-    description: nullableString(activity.description),
-    amount: numberValue(activity.amount),
-    currency: nullableString(activity.currency) || currency,
-    status: nullableString(activity.status) || "Posted",
-    source: "Webull reported",
-    quality: "verified",
-    asOf: dateValue(activity.occurredAt),
-  }));
+  const grossExposure = securityHoldings.reduce((sum, holding) => sum + Math.abs(numberValue(holding.weight) ?? 0), 0);
+  const netExposure = validWeightDenominator
+    ? holdings.reduce((sum, holding) => sum + (numberValue(holding.weight) ?? 0), 0)
+    : null;
   const issues = normalizeServiceIssues(dashboard.issues);
   if (periods.length && !benchmarkSeries) {
     issues.push({
@@ -699,8 +772,6 @@ export function normalizeServiceDashboard(
   }
 
   return {
-    accountId,
-    currency,
     source: "Webull and Portfolio Lab",
     quality: periods.length ? historicalQuality : "partial",
     asOf,
@@ -711,23 +782,18 @@ export function normalizeServiceDashboard(
     performanceReady: periods.length > 0 && timeWeightedReturn !== null,
     analyticsCoverage,
     metrics: {
-      netAccountValue: currentMetric(balance.equity, "Net account value"),
-      cashBalance: currentMetric(balance.cash, "Cash balance"),
-      marketValue: currentMetric(balance.marketValue, "Market value"),
-      dayProfitLoss: currentMetric(balance.dayProfitLoss, "Day profit and loss"),
-      unrealizedProfitLoss: currentMetric(balance.unrealizedProfitLoss, "Unrealized profit and loss"),
-      timeWeightedReturn: performanceMetric(timeWeightedReturn, "Time-weighted return", "percent"),
-      benchmarkReturn: sourcedMetric(benchmarkReturn, `${benchmarkSymbol} return`, "Yahoo Finance adjusted close", benchmarkReturn === null ? "unavailable" : "verified", null, historicalThrough, "Adjusted-close total-return proxy aligned to common portfolio observation dates.", "percent", currency),
-      excessReturn: performanceMetric(excessReturn, "Geometric excess return", "percent"),
-      investmentGain: performanceMetric(investmentGain, "Investment gain", "currency"),
-      netContributions: performanceMetric(netExternalFlow, "Net contributions", "currency"),
-      moneyWeightedReturn: performanceMetric(moneyWeightedReturn, "Money-weighted return", "percent"),
+      timeWeightedReturn: performanceMetric(timeWeightedReturn, "Time-weighted return"),
+      benchmarkReturn: sourcedMetric(benchmarkReturn, `${benchmarkSymbol} return`, "Yahoo Finance adjusted close", benchmarkReturn === null ? "unavailable" : "verified", null, historicalThrough, "Adjusted-close total-return proxy aligned to common portfolio observation dates.", "percent"),
+      excessReturn: performanceMetric(excessReturn, "Geometric excess return"),
+      moneyWeightedReturn: performanceMetric(moneyWeightedReturn, "Money-weighted return"),
+      grossExposure: sourcedMetric(grossExposure, "Gross exposure", "Portfolio Lab computed", validWeightDenominator ? "verified" : "unavailable", asOf, asOf, "Sum of absolute broker-reported position weights relative to net account value.", "percent"),
+      netExposure: sourcedMetric(netExposure, "Net exposure", "Portfolio Lab computed", validWeightDenominator ? "verified" : "unavailable", asOf, asOf, "Signed positions, cash or margin, and reconciliation residual relative to net account value.", "percent"),
+      cashMarginWeight: sourcedMetric(cashWeight, "Cash / Margin weight", "Webull reported", cashWeight === null ? "unavailable" : "verified", asOf, asOf, "Broker-reported cash balance divided by net account value; negative values indicate margin borrowing.", "percent"),
       benchmarkSymbol,
       periodLabel: formatPeriodLabel(start, end),
     },
     chart: chart.points,
     holdings,
-    activities,
     exclusions,
     issues,
   };
@@ -740,14 +806,11 @@ function buildPerformanceChart(
   if (!periods.length) return { points: [], benchmarkReturn: null };
   const first = periods[0];
   const firstDate = dateOnly(first.start);
-  const beginningValue = numberValue(first.beginningValue);
   if (!firstDate) return { points: [], benchmarkReturn: null };
-  let growth: number | null = 100;
+  let growth: number | null = 1;
   const points: Record<string, unknown>[] = [{
     date: firstDate,
-    portfolioGrowth: growth,
-    portfolioValue: beginningValue,
-    externalCashFlow: 0,
+    portfolioReturn: 0,
   }];
   for (const period of periods) {
     const date = dateOnly(period.end);
@@ -756,9 +819,7 @@ function buildPerformanceChart(
     growth = growth !== null && periodReturn !== null ? growth * (1 + periodReturn) : null;
     points.push({
       date,
-      portfolioGrowth: growth,
-      portfolioValue: numberValue(period.endingValue),
-      externalCashFlow: numberValue(period.netExternalFlow),
+      portfolioReturn: growth === null ? null : growth - 1,
     });
   }
 
@@ -776,7 +837,7 @@ function buildPerformanceChart(
   for (const point of points) {
     const date = typeof point.date === "string" ? point.date : "";
     const price = benchmarkByDate.get(date);
-    point.benchmarkGrowth = benchmarkBase && price ? 100 * price / benchmarkBase : null;
+    point.benchmarkReturn = benchmarkBase && price ? price / benchmarkBase - 1 : null;
   }
   const benchmarkReturn = benchmarkBase && common.length > 1
     ? common.at(-1)!.price / benchmarkBase - 1
@@ -792,10 +853,9 @@ function sourcedMetric(
   asOf: string | null,
   dataThrough: string | null,
   methodology: string,
-  unit: "currency" | "percent",
-  currency: string,
+  unit: "percent" | "number",
 ): Record<string, unknown> {
-  return { value: numberValue(value), label, source, quality, asOf, dataThrough, methodology, unit, currency };
+  return { value: numberValue(value), label, source, quality, asOf, dataThrough, methodology, unit };
 }
 
 function recordArray(value: unknown): Record<string, unknown>[] {

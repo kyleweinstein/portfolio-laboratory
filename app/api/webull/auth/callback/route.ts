@@ -9,16 +9,9 @@ import {
   resolveGitHubCallbackUrl,
   sessionCookie,
 } from "../../../../github-auth";
-import {
-  isWebullIntegrationEnabled,
-  jsonResponse,
-} from "../../../../webull-server";
+import { jsonResponse } from "../../../../webull-server";
 
 export async function GET(request: Request) {
-  if (!isWebullIntegrationEnabled()) {
-    return jsonResponse({ error: "The Webull integration is disabled." }, 404);
-  }
-
   let config: ReturnType<typeof getGitHubAuthConfig>;
   try {
     config = getGitHubAuthConfig();

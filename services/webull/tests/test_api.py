@@ -468,7 +468,7 @@ def test_connected_account_without_snapshot_requests_sync() -> None:
     assert status.json()["nextAction"] == "sync_account"
 
 
-def test_statement_anchor_accepts_normalized_totals_not_documents() -> None:
+def test_raw_statement_anchor_route_is_not_exposed() -> None:
     adapter = FakeWebullAdapter()
     repository = MemoryRepository()
     client = TestClient(
@@ -489,5 +489,5 @@ def test_statement_anchor_accepts_normalized_totals_not_documents() -> None:
             "sourceSha256": "a" * 64,
         },
     )
-    assert response.status_code == 200, response.text
-    assert response.json()["externalStatementId"] == "2026-07"
+    assert response.status_code == 404
+    assert repository.anchors == {}

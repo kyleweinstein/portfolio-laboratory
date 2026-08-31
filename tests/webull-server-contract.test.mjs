@@ -17,16 +17,16 @@ const serviceDashboard = {
       accountId: "account-1234",
       asOf: "2026-08-20T20:10:00Z",
       currency: "USD",
-      equity: "15000",
-      cash: "3000",
-      marketValue: "12000",
+      equity: "10000",
+      cash: "-2500",
+      marketValue: "12500",
       dayProfitLoss: "75",
       unrealizedProfitLoss: "900",
     },
     positions: [
-      { externalPositionId: "position-aapl", symbol: "AAPL", instrumentType: "EQUITY", currency: "USD", quantity: "20", marketValue: "5000", costBasis: "4400", unrealizedProfitLoss: "600" },
-      { externalPositionId: "position-spy", symbol: "SPY", instrumentType: "ETF", currency: "USD", quantity: "10", marketValue: "7000", costBasis: "6700", unrealizedProfitLoss: "300" },
-      { externalPositionId: "position-option", symbol: "AAPL260918C00300000", instrumentType: "OPTION", currency: "USD", quantity: "1", marketValue: "500" },
+      { externalPositionId: "position-aapl", symbol: "AAPL", instrumentType: "EQUITY", currency: "USD", quantity: "20", lastPrice: "250", averageCost: "220", marketValue: "5000", costBasis: "4400", unrealizedProfitLoss: "600" },
+      { externalPositionId: "position-spy", symbol: "SPY", instrumentType: "ETF", currency: "USD", quantity: "10", lastPrice: "700", averageCost: "670", marketValue: "7000", costBasis: "6700", unrealizedProfitLoss: "300" },
+      { externalPositionId: "position-option", symbol: "AAPL260918C00300000", instrumentType: "OPTION", currency: "USD", quantity: "1", lastPrice: "500", averageCost: "400", marketValue: "500" },
     ],
   },
   performance: {
@@ -60,22 +60,32 @@ test("private service payload maps to the redacted browser dashboard contract", 
   );
 
   assert.ok(dashboard);
-  assert.equal(dashboard.accountId, "account-1234");
   assert.equal(dashboard.holdingsReady, true);
   assert.equal(dashboard.performanceReady, true);
-  assert.equal(dashboard.analyticsCoverage, 0.8);
-  assert.equal(dashboard.metrics.netAccountValue.value, 15000);
-  assert.equal(dashboard.metrics.netAccountValue.source, "Webull reported");
-  assert.equal(dashboard.metrics.dayProfitLoss.value, 75);
+  assert.equal(dashboard.analyticsCoverage, 1.2);
   assert.equal(dashboard.metrics.timeWeightedReturn.source, "Portfolio Lab computed");
   assert.ok(Math.abs(dashboard.metrics.benchmarkReturn.value - 0.02) < 1e-12);
   assert.ok(Math.abs(dashboard.metrics.excessReturn.value - ((1.03 / 1.02) - 1)) < 1e-12);
-  assert.equal(dashboard.metrics.investmentGain.value, 1000);
+  assert.equal(dashboard.metrics.grossExposure.value, 1.25);
+  assert.equal(dashboard.metrics.netExposure.value, 1);
+  assert.equal(dashboard.metrics.cashMarginWeight.value, -0.25);
   assert.equal(dashboard.holdings.filter(item => item.eligibleForAnalysis).length, 2);
+  assert.equal(dashboard.holdings.find(item => item.kind === "cash_margin").weight, -0.25);
+  assert.equal(dashboard.holdings.find(item => item.symbol === "AAPL").costBasisPerShare, 220);
+  assert.ok(Math.abs(dashboard.holdings.find(item => item.symbol === "AAPL").returnPercent - (250 / 220 - 1)) < 1e-12);
+  assert.ok(Math.abs(dashboard.holdings.reduce((sum, item) => sum + item.weight, 0) - 1) < 1e-12);
   assert.equal(dashboard.exclusions.length, 1);
-  assert.equal(dashboard.activities[0].activityId, "deposit-1");
   assert.equal(dashboard.chart.length, 3);
-  assert.equal(dashboard.chart.at(-1).benchmarkGrowth, 102);
+  assert.ok(Math.abs(dashboard.chart.at(-1).benchmarkReturn - 0.02) < 1e-12);
+
+  const serialized = JSON.stringify(dashboard);
+  for (const forbidden of [
+    "accountId", "maskedIdentifier", "quantity", "marketValue", "netAccountValue",
+    "cashBalance", "dayProfitLoss", "unrealizedProfitLoss", "investmentGain",
+    "netContributions", "portfolioValue", "externalCashFlow", "activities",
+  ]) {
+    assert.doesNotMatch(serialized, new RegExp(`\\"${forbidden}\\"`, "i"));
+  }
 });
 
 test("no performance history stays explicitly partial and unavailable", () => {
@@ -143,6 +153,7 @@ test("authenticated status forwards only a validated verification attempt and ne
     assert.equal(status.verification.startedAt, "2026-08-20T20:00:00Z");
     assert.equal(status.lastSyncAttempt, null);
     assert.equal(status.nextAction, "wait");
+    assert.equal(status.selectedAccountRef, null);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -195,6 +206,9 @@ test("connected status preserves the last sync failure and issues without invent
     const status = await response.json();
     assert.equal(status.connected, true);
     assert.equal(status.dashboard, null);
+    assert.match(status.accounts[0].accountRef, /^wbr_[A-Za-z0-9_-]{24,64}$/);
+    assert.equal(status.selectedAccountRef, status.accounts[0].accountRef);
+    assert.doesNotMatch(JSON.stringify(status), /account-1234|accountId|selectedAccountId/);
     assert.deepEqual(status.lastSyncAttempt, {
       status: "error",
       startedAt: "2026-08-20T20:00:00Z",
@@ -224,7 +238,7 @@ test("signed-out status exposes only the sign-in action and no private attempt",
     lastSyncAttempt: null,
     nextAction: "sign_in",
     accounts: [],
-    selectedAccountId: null,
+    selectedAccountRef: null,
     dashboard: null,
     issues: [],
   });
@@ -265,7 +279,7 @@ test("status transport failures stay errors and preserve safe FastAPI details", 
       lastSyncAttempt: null,
       nextAction: "start_verification",
       accounts: [],
-      selectedAccountId: null,
+      selectedAccountRef: null,
       dashboard: null,
       issues: [],
       csrfToken: session.csrfToken,

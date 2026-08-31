@@ -6,6 +6,7 @@ from datetime import datetime
 from ..models import (
     BalanceSnapshot,
     BrokerageAccount,
+    BrokerProvider,
     CapabilityReport,
     CashActivity,
     OrderRecord,
@@ -13,18 +14,23 @@ from ..models import (
 )
 
 
-class WebullAdapterError(RuntimeError):
+class BrokerAdapterError(RuntimeError):
     """A sanitized error returned by the read-only brokerage adapter."""
+
+
+class WebullAdapterError(BrokerAdapterError):
+    """Backward-compatible sanitized Webull adapter error."""
 
 
 class AdapterConfigurationError(WebullAdapterError):
     """The adapter cannot run until required runtime configuration is supplied."""
 
 
-class ReadOnlyWebullAdapter(ABC):
-    """The complete brokerage surface. Trading methods are intentionally absent."""
+class ReadOnlyBrokerAdapter(ABC):
+    """Provider-neutral read surface. Trading and money movement are absent."""
 
     enforcement_mode = "unverified"
+    provider = BrokerProvider.WEBULL
 
     @abstractmethod
     def probe(self, *, live: bool = False) -> CapabilityReport:
@@ -61,6 +67,12 @@ class ReadOnlyWebullAdapter(ABC):
         until: datetime | None = None,
     ) -> list[OrderRecord]:
         raise NotImplementedError
+
+
+class ReadOnlyWebullAdapter(ReadOnlyBrokerAdapter):
+    """Backward-compatible Webull specialization of the broker contract."""
+
+    provider = BrokerProvider.WEBULL
 
 
 def application_read_only_gate_enabled(*, configured: bool, adapter: object) -> bool:

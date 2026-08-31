@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from "react";
+import Link from "next/link";
 import DiversificationMap from "./diversification-map";
 import { parsePortfolioCsv } from "./portfolio-csv";
 import WebullDashboard from "./webull-dashboard";
@@ -38,6 +39,7 @@ const TABLE_PAGE_SIZE = 25;
 const CLIENT_CACHE_TTL_MS = 60 * 60 * 1000;
 const marketCache = new Map<string, { series: RawSeries; fetchedAt: number }>();
 const PORTFOLIO_SOURCE_EVENT = "portfolio-source-change";
+const PUBLISHING_UI_ENABLED = process.env.NEXT_PUBLIC_PORTFOLIO_PUBLISHING_ENABLED === "true";
 
 function portfolioSourceSnapshot(): WebullSource {
   const requested = new URLSearchParams(window.location.search).get("source");
@@ -97,10 +99,10 @@ function snapshotKey(holdings: Holding[], benchmark: string, years: number, risk
 
 function App() {
   const [holdings, setHoldings] = useState<Holding[]>(DEFAULT_HOLDINGS);
-  const portfolioSource = useSyncExternalStore(
+  const portfolioSource = useSyncExternalStore<WebullSource>(
     subscribePortfolioSource,
     portfolioSourceSnapshot,
-    () => "manual",
+    (): WebullSource => "manual",
   );
   const [benchmark, setBenchmark] = useState("SPY");
   const [years, setYears] = useState(3);
@@ -397,6 +399,11 @@ function App() {
     : progress.phase === "analyzing" ? "Analyzing portfolio…" : "Analyze portfolio";
 
   return <main>
+    <nav className="portfolio-nav" aria-label="Portfolio Lab">
+      <Link href="/">Manual lab</Link>
+      {PUBLISHING_UI_ENABLED && <Link href="/portfolios">Tracked portfolios</Link>}
+      {PUBLISHING_UI_ENABLED && <Link href="/manage">Manage</Link>}
+    </nav>
     <header>
       <div><span className="eyebrow">THE SEER&apos;S</span><h1>PORTFOLIO LAB</h1><p>Design, stress-check, pair, and rebalance a long-only portfolio using adjusted daily closes.</p></div>
       {portfolioSource === "manual" && <div className="masthead-action"><button className="primary" onClick={analyze} disabled={busy}>{analyzeLabel}</button>{dirty && <span className="stale-badge">Changes not analyzed</span>}</div>}

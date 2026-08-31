@@ -158,7 +158,7 @@ test("Webull stays disabled by default without affecting the public manual app",
     lastSyncAttempt: null,
     nextAction: "configure",
     accounts: [],
-    selectedAccountId: null,
+    selectedAccountRef: null,
     dashboard: null,
     issues: [],
   });
