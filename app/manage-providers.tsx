@@ -1,7 +1,12 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  cleanPlaidOAuthReturnUrl,
+  isPlaidOAuthReturn,
+  PLAID_LINK_TOKEN_STORAGE_KEY,
+} from "./plaid-oauth-resume";
 import type { ProviderCapability } from "./publication-server";
 
 declare global {
@@ -9,6 +14,7 @@ declare global {
     Plaid?: {
       create(options: {
         token: string;
+        receivedRedirectUri?: string;
         onSuccess(publicToken: string): void;
         onExit(error: unknown): void;
       }): { open(): void; destroy(): void };
@@ -23,51 +29,102 @@ export default function ManageProviders({
   providers: ProviderCapability[];
   csrfToken: string;
 }) {
-  const [state, setState] = useState<"idle" | "starting" | "linking" | "exchanging" | "done" | "error">("idle");
+  const [state, setState] = useState<
+    "idle" | "starting" | "linking" | "exchanging" | "done" | "error"
+  >("idle");
   const [message, setMessage] = useState("");
   const m1 = providers.find(provider => provider.provider === "M1 Finance");
   const busy = state === "starting" || state === "linking" || state === "exchanging";
+  const oauthResumeStarted = useRef(false);
+
+  const openPlaidLink = useCallback(async (
+    linkToken: string,
+    receivedRedirectUri?: string,
+  ) => {
+    await loadPlaidLink();
+    if (!window.Plaid) throw new Error("Plaid Link did not load.");
+    setState("linking");
+    setMessage(receivedRedirectUri
+      ? "Resuming the secure M1 connection in Plaid Link."
+      : "Complete the M1 connection in Plaid Link.");
+
+    let handler: { open(): void; destroy(): void } | null = null;
+    handler = window.Plaid.create({
+      token: linkToken,
+      ...(receivedRedirectUri ? { receivedRedirectUri } : {}),
+      onSuccess(publicToken) {
+        setState("exchanging");
+        setMessage("Securing the read-only M1 connection...");
+        void ownerPost(
+          "/api/manage/providers/plaid/exchange",
+          { publicToken },
+          csrfToken,
+        ).then(() => {
+          handler?.destroy();
+          window.sessionStorage.removeItem(PLAID_LINK_TOKEN_STORAGE_KEY);
+          setState("done");
+          setMessage("M1 is connected. Reloading provider status...");
+          window.location.assign(cleanPlaidOAuthReturnUrl(window.location.href));
+        }).catch(() => {
+          handler?.destroy();
+          window.sessionStorage.removeItem(PLAID_LINK_TOKEN_STORAGE_KEY);
+          window.history.replaceState(
+            null,
+            "",
+            cleanPlaidOAuthReturnUrl(window.location.href),
+          );
+          setState("error");
+          setMessage("The M1 connection could not be completed. No publication was changed.");
+        });
+      },
+      onExit() {
+        handler?.destroy();
+        setState("idle");
+        setMessage("Plaid Link was closed without changing the connection.");
+      },
+    });
+    handler.open();
+  }, [csrfToken]);
+
+  useEffect(() => {
+    if (oauthResumeStarted.current || !isPlaidOAuthReturn(window.location.search)) return;
+    oauthResumeStarted.current = true;
+    const linkToken = window.sessionStorage.getItem(PLAID_LINK_TOKEN_STORAGE_KEY);
+    if (!linkToken) {
+      window.history.replaceState(null, "", cleanPlaidOAuthReturnUrl(window.location.href));
+      queueMicrotask(() => {
+        setState("error");
+        setMessage("The Plaid authorization session expired. Start Connect M1 again.");
+      });
+      return;
+    }
+
+    queueMicrotask(() => {
+      void openPlaidLink(linkToken, window.location.href).catch(() => {
+        window.sessionStorage.removeItem(PLAID_LINK_TOKEN_STORAGE_KEY);
+        window.history.replaceState(null, "", cleanPlaidOAuthReturnUrl(window.location.href));
+        setState("error");
+        setMessage("Plaid authorization could not be resumed. Start Connect M1 again.");
+      });
+    });
+  }, [openPlaidLink]);
 
   async function connectM1() {
     if (busy) return;
     setState("starting");
-    setMessage("Creating a secure Plaid Link session…");
+    setMessage("Creating a secure Plaid Link session...");
     try {
-      const response = await ownerPost("/api/manage/providers/plaid/link-token", {}, csrfToken);
+      const response = await ownerPost(
+        "/api/manage/providers/plaid/link-token",
+        {},
+        csrfToken,
+      );
       const linkToken = typeof response.linkToken === "string" ? response.linkToken : null;
       if (!linkToken) throw new Error("Plaid Link did not return a token.");
-      await loadPlaidLink();
-      if (!window.Plaid) throw new Error("Plaid Link did not load.");
-      setState("linking");
-      setMessage("Complete the M1 connection in Plaid Link.");
-      const handler = window.Plaid.create({
-        token: linkToken,
-        onSuccess(publicToken) {
-          setState("exchanging");
-          setMessage("Securing the read-only M1 connection…");
-          void ownerPost(
-            "/api/manage/providers/plaid/exchange",
-            { publicToken },
-            csrfToken,
-          ).then(() => {
-            handler.destroy();
-            setState("done");
-            setMessage("M1 is connected. Reloading provider status…");
-            window.location.reload();
-          }).catch(() => {
-            handler.destroy();
-            setState("error");
-            setMessage("The M1 connection could not be completed. No publication was changed.");
-          });
-        },
-        onExit() {
-          handler.destroy();
-          setState("idle");
-          setMessage("Plaid Link was closed without changing the connection.");
-        },
-      });
-      handler.open();
+      window.sessionStorage.setItem(PLAID_LINK_TOKEN_STORAGE_KEY, linkToken);
+      await openPlaidLink(linkToken);
     } catch {
+      window.sessionStorage.removeItem(PLAID_LINK_TOKEN_STORAGE_KEY);
       setState("error");
       setMessage("Plaid Link is unavailable. No publication was changed.");
     }
