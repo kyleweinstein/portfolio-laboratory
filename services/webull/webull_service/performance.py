@@ -220,7 +220,7 @@ def calculate_performance(
         ending_value=last.value,
         quality=(
             "verified"
-            if periods and all(point.source == "webull_snapshot" for point in points)
+            if periods and all(point.source.endswith("_snapshot") for point in points)
             else "estimated"
             if periods
             else "unavailable"

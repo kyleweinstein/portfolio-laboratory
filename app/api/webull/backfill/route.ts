@@ -4,6 +4,8 @@ import {
   proxyWebullJson,
   readJsonBody,
   requestBodyErrorResponse,
+  resolveWebullAccountReference,
+  webullStatusResponse,
 } from "../../../webull-server";
 
 export async function POST(request: Request) {
@@ -12,14 +14,18 @@ export async function POST(request: Request) {
   try {
     const input = await readJsonBody(request);
     const body: Record<string, unknown> = {};
-    if ("accountId" in input) {
+    if ("accountRef" in input) {
       if (
-        typeof input.accountId !== "string" ||
-        !/^[A-Za-z0-9_-]{1,128}$/.test(input.accountId)
+        typeof input.accountRef !== "string" ||
+        !/^wbr_[A-Za-z0-9_-]{24,64}$/.test(input.accountRef)
       ) {
         return jsonResponse({ error: "Select a valid Webull account." }, 400);
       }
-      body.accountId = input.accountId;
+      const accountId = await resolveWebullAccountReference(input.accountRef, access.session);
+      if (!accountId) {
+        return jsonResponse({ error: "Select a valid Webull account." }, 400);
+      }
+      body.accountId = accountId;
     }
     if ("days" in input) {
       if (
@@ -32,11 +38,12 @@ export async function POST(request: Request) {
       }
       body.days = input.days;
     }
-    return proxyWebullJson("/backfill", access.session, {
+    const response = await proxyWebullJson("/backfill", access.session, {
       method: "POST",
       body,
       timeoutMs: 60_000,
     });
+    return response.ok ? webullStatusResponse(request) : response;
   } catch (caught) {
     return requestBodyErrorResponse(caught);
   }

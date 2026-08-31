@@ -1,0 +1,11 @@
+# Real statements and normalized private financial data must never be committed.
+input/
+private-output/
+*.private.json
+*.private.csv
+*.fernet
+.fingerprint.key
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

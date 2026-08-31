@@ -138,11 +138,31 @@ export function safeReturnTo(value: string | null | undefined): string {
   try {
     const parsed = new URL(value, "https://portfolio.local");
     if (parsed.origin !== "https://portfolio.local") return "/";
-    if (parsed.pathname.startsWith("/api/webull/auth/")) return "/";
+    if (
+      parsed.pathname.startsWith("/api/webull/auth/") ||
+      parsed.pathname.startsWith("/api/owner/auth/")
+    ) return "/";
     return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return "/";
   }
+}
+
+export function resolveGitHubOwnerCallbackUrl(
+  request: Request,
+  env: Environment = runtimeEnvironment(),
+): string {
+  // Keep existing Railway/GitHub OAuth configuration working during the
+  // transition. When a neutral callback is configured, owner sign-in uses it;
+  // otherwise the existing callback remains valid and is no longer coupled to
+  // the Webull feature flag.
+  const configured = env.GITHUB_OWNER_OAUTH_REDIRECT_URI?.trim() ||
+    env.GITHUB_OAUTH_REDIRECT_URI?.trim();
+  return validateGitHubCallbackUrl(
+    configured
+      ? new URL(configured)
+      : new URL("/api/owner/auth/callback", request.url),
+  );
 }
 
 export function resolveGitHubCallbackUrl(
@@ -153,6 +173,10 @@ export function resolveGitHubCallbackUrl(
   const callback = configured
     ? new URL(configured)
     : new URL("/api/webull/auth/callback", request.url);
+  return validateGitHubCallbackUrl(callback);
+}
+
+function validateGitHubCallbackUrl(callback: URL): string {
   if (
     callback.protocol !== "https:" &&
     !(callback.protocol === "http:" && isLoopbackHost(callback.hostname))
@@ -355,7 +379,8 @@ function mutationOrigin(
   // Railway terminates TLS before Vinext, so request.url can contain the
   // service's internal HTTP address. The configured OAuth callback is the
   // canonical public origin already bound to this owner-only session.
-  const configuredCallback = env.GITHUB_OAUTH_REDIRECT_URI?.trim();
+  const configuredCallback = env.GITHUB_OWNER_OAUTH_REDIRECT_URI?.trim() ||
+    env.GITHUB_OAUTH_REDIRECT_URI?.trim();
   try {
     return configuredCallback
       ? new URL(configuredCallback).origin

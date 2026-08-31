@@ -11,6 +11,7 @@ import {
   parseGitHubOwnerIds,
   readGitHubSession,
   readOAuthState,
+  resolveGitHubOwnerCallbackUrl,
   safeReturnTo,
   serializeSecureCookie,
   validateMutationRequest,
@@ -156,6 +157,35 @@ test("return paths cannot escape the portfolio origin or loop through auth", () 
   assert.equal(safeReturnTo("//attacker.example/path"), "/");
   assert.equal(safeReturnTo("https://attacker.example/path"), "/");
   assert.equal(safeReturnTo("/api/webull/auth/callback"), "/");
+  assert.equal(safeReturnTo("/api/owner/auth/callback"), "/");
+});
+
+test("neutral owner OAuth callback is independent of the Webull feature flag and remains backward compatible", () => {
+  const request = new Request("https://portfolio.example/api/owner/auth/login");
+  assert.equal(
+    resolveGitHubOwnerCallbackUrl(request, { WEBULL_INTEGRATION_ENABLED: "false" }),
+    "https://portfolio.example/api/owner/auth/callback",
+  );
+  assert.equal(
+    resolveGitHubOwnerCallbackUrl(request, {
+      WEBULL_INTEGRATION_ENABLED: "false",
+      GITHUB_OWNER_OAUTH_REDIRECT_URI: "https://lab.example/api/owner/auth/callback",
+      GITHUB_OAUTH_REDIRECT_URI: "https://lab.example/api/webull/auth/callback",
+    }),
+    "https://lab.example/api/owner/auth/callback",
+  );
+  assert.equal(
+    resolveGitHubOwnerCallbackUrl(request, {
+      GITHUB_OAUTH_REDIRECT_URI: "https://lab.example/api/webull/auth/callback",
+    }),
+    "https://lab.example/api/webull/auth/callback",
+  );
+  assert.throws(
+    () => resolveGitHubOwnerCallbackUrl(request, {
+      GITHUB_OWNER_OAUTH_REDIRECT_URI: "http://portfolio.example/api/owner/auth/callback",
+    }),
+    /must use HTTPS/,
+  );
 });
 
 function sessionRequest(cookieValue) {

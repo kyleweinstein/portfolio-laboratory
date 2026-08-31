@@ -33,9 +33,9 @@ test("Webull status normalizes wrapped responses without inventing connection st
         },
         nextAction: "wait",
         csrfToken: "csrf-token-for-test-only-1234567890",
-        accounts: [{ id: "acct-1", label: "Individual", last4: "1234", currency: "USD" }],
-        selectedAccountId: "acct-1",
-        dashboard: { accountId: "acct-1", quality: "verified", holdings: [] },
+        accounts: [{ accountRef: "wbr_aaaaaaaaaaaaaaaaaaaaaaaa", label: "Individual" }],
+        selectedAccountRef: "wbr_aaaaaaaaaaaaaaaaaaaaaaaa",
+        dashboard: { quality: "verified", holdings: [] },
         issues: [{ issueId: "SYNC_INCOMPLETE", severity: "warning", title: "Sync incomplete", message: "Retry the account sync." }],
       },
     },
@@ -49,8 +49,7 @@ test("Webull status normalizes wrapped responses without inventing connection st
   assert.equal(status.lastSyncAttempt?.cashActivitiesComplete, false);
   assert.equal(status.nextAction, "wait");
   assert.equal(status.issues[0].issueId, "SYNC_INCOMPLETE");
-  assert.equal(status.accounts[0].accountId, "acct-1");
-  assert.match(status.accounts[0].maskedIdentifier, /1234$/);
+  assert.equal(status.accounts[0].accountRef, "wbr_aaaaaaaaaaaaaaaaaaaaaaaa");
   assert.equal(status.dashboard?.quality, "verified");
 });
 
@@ -70,7 +69,7 @@ test("Webull status rejects unknown verification values and never exposes attemp
     },
     nextAction: "open_trading",
     accounts: [],
-    selectedAccountId: null,
+    selectedAccountRef: null,
     dashboard: null,
   });
   assert.equal(invalid.verification, null);
@@ -98,7 +97,7 @@ test("Webull status rejects unknown verification values and never exposes attemp
     },
     nextAction: "retry_verification",
     accounts: [],
-    selectedAccountId: null,
+    selectedAccountRef: null,
     dashboard: null,
     issues: [{ issueId: "PRIVATE", severity: "error", title: "Private issue" }],
   });
@@ -123,8 +122,8 @@ test("Webull status rejects malformed durable sync attempts", () => {
       message: "Malformed",
     },
     nextAction: "sync_account",
-    accounts: [{ accountId: "acct-1" }],
-    selectedAccountId: "acct-1",
+    accounts: [{ accountRef: "wbr_aaaaaaaaaaaaaaaaaaaaaaaa" }],
+    selectedAccountRef: "wbr_aaaaaaaaaaaaaaaaaaaaaaaa",
     dashboard: null,
     issues: [],
   });
@@ -133,12 +132,12 @@ test("Webull status rejects malformed durable sync attempts", () => {
 
 test("eligible Webull positions create one normalized long-only analytics sleeve", () => {
   const holdings = buildEligibleWebullHoldings([
-    { symbol: " aapl ", instrumentType: "EQUITY", marketValue: "600" },
-    { symbol: "AAPL", instrumentType: "STOCK", marketValue: 150 },
-    { symbol: "SPY", instrumentType: "ETF", marketValue: 250 },
-    { symbol: "CASH", instrumentType: "CASH", marketValue: 100 },
-    { symbol: "TSLA", instrumentType: "EQUITY", marketValue: -50 },
-    { symbol: "BTC", instrumentType: "CRYPTO", marketValue: 500, eligibleForAnalysis: false },
+    { symbol: " aapl ", instrumentType: "EQUITY", weight: "0.60" },
+    { symbol: "AAPL", instrumentType: "STOCK", weight: 0.15 },
+    { symbol: "SPY", instrumentType: "ETF", weight: 0.25 },
+    { kind: "cash_margin", symbol: "USD", instrumentType: "CASH", weight: -0.25 },
+    { symbol: "TSLA", instrumentType: "EQUITY", weight: -0.05 },
+    { symbol: "BTC", instrumentType: "CRYPTO", weight: 0.50, eligibleForAnalysis: false },
   ]);
 
   assert.deepEqual(holdings, [
@@ -169,7 +168,7 @@ test("authenticated Webull mutations send the session CSRF token", async () => {
         verificationInProgress: false,
         csrfToken: "csrf-token-for-test-only-1234567890",
         accounts: [],
-        selectedAccountId: null,
+        selectedAccountRef: null,
         dashboard: null,
       });
     }

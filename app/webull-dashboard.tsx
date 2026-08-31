@@ -22,10 +22,8 @@ import {
   syncWebull,
   webullLoginUrl,
   type WebullAccount,
-  type WebullActivity,
   type WebullChartPoint,
   type WebullDashboardData,
-  type WebullHolding,
   type WebullIssue,
   type WebullLastSyncAttempt,
   type WebullMetric,
@@ -37,7 +35,6 @@ import {
 
 type LoadingAction = "connect" | "sync" | "backfill" | "select" | null;
 type LoadFailure = { kind: "disabled" | "unauthorized" | "error"; message: string };
-type ChartMode = "growth" | "value";
 
 export type WebullDashboardProps = {
   source?: WebullSource;
@@ -142,19 +139,10 @@ function displayNumber(value: unknown, maximumFractionDigits = 2): string {
   return number === null ? "—" : new Intl.NumberFormat(undefined, { maximumFractionDigits }).format(number);
 }
 
-function displayCurrency(value: unknown, currency = "USD", compact = false): string {
+function displayCostBasisPerShare(value: unknown): string {
   const number = finiteNumber(value as number | string | null | undefined);
   if (number === null) return "—";
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-      notation: compact ? "compact" : "standard",
-      maximumFractionDigits: compact ? 1 : 2,
-    }).format(number);
-  } catch {
-    return `${currency} ${displayNumber(number)}`;
-  }
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(number);
 }
 
 function displayPercent(value: unknown, digits = 2): string {
@@ -162,11 +150,10 @@ function displayPercent(value: unknown, digits = 2): string {
   return number === null ? "—" : `${(number * 100).toFixed(digits)}%`;
 }
 
-function displayMetric(metric: WebullMetric | null | undefined, fallbackUnit: "currency" | "percent", currency: string): string {
+function displayMetric(metric: WebullMetric | null | undefined, fallbackUnit: "number" | "percent"): string {
   if (!metric) return "—";
   const unit = metric.unit || fallbackUnit;
   if (unit === "percent") return displayPercent(metric.value);
-  if (unit === "currency") return displayCurrency(metric.value, metric.currency || currency);
   return displayNumber(metric.value);
 }
 
@@ -190,18 +177,17 @@ function ProvenanceLabel({ provenance, fallbackThrough }: { provenance?: WebullP
   );
 }
 
-function MetricCard({ label, metric, fallbackUnit, currency, detail, fallbackThrough }: {
+function MetricCard({ label, metric, fallbackUnit, detail, fallbackThrough }: {
   label: string;
   metric?: WebullMetric | null;
-  fallbackUnit: "currency" | "percent";
-  currency: string;
+  fallbackUnit: "number" | "percent";
   detail?: ReactNode;
   fallbackThrough?: string | null;
 }) {
   return (
     <div className="webull-metric">
       <span className="webull-metric-label">{label}</span>
-      <strong>{displayMetric(metric, fallbackUnit, currency)}</strong>
+      <strong>{displayMetric(metric, fallbackUnit)}</strong>
       {detail ? <div className="webull-metric-detail">{detail}</div> : null}
       <ProvenanceLabel provenance={metric} fallbackThrough={fallbackThrough} />
     </div>
@@ -209,7 +195,7 @@ function MetricCard({ label, metric, fallbackUnit, currency, detail, fallbackThr
 }
 
 function accountLabel(account: WebullAccount): string {
-  return [account.label, account.maskedIdentifier, account.accountType].filter(Boolean).join(" · ");
+  return [account.label, account.accountType].filter(Boolean).join(" · ");
 }
 
 function stateFailure(error: unknown): LoadFailure {
@@ -232,12 +218,9 @@ function panelId(base: string, source: WebullSource) {
 type ChartGeometry = {
   portfolioPath: string;
   benchmarkPath: string;
-  cashFlowXs: number[];
   yTicks: { y: number; value: number }[];
   xTicks: { x: number; label: string }[];
   pointCount: number;
-  firstValue: number | null;
-  lastValue: number | null;
   benchmarkName: string;
 };
 
@@ -245,7 +228,7 @@ function makePath(points: { x: number; y: number }[]): string {
   return points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
 }
 
-function chartGeometry(points: readonly WebullChartPoint[], mode: ChartMode, benchmarkName: string): ChartGeometry | null {
+function chartGeometry(points: readonly WebullChartPoint[], benchmarkName: string): ChartGeometry | null {
   const width = 800;
   const height = 300;
   const left = 64;
@@ -260,8 +243,8 @@ function chartGeometry(points: readonly WebullChartPoint[], mode: ChartMode, ben
     .sort((leftPoint, rightPoint) => leftPoint.parsedDate!.getTime() - rightPoint.parsedDate!.getTime());
   if (ordered.length < 2) return null;
 
-  const portfolioValues = ordered.map(point => finiteNumber(mode === "growth" ? point.portfolioGrowth : point.portfolioValue));
-  const benchmarkValues = mode === "growth" ? ordered.map(point => finiteNumber(point.benchmarkGrowth)) : ordered.map(() => null);
+  const portfolioValues = ordered.map(point => finiteNumber(point.portfolioReturn));
+  const benchmarkValues = ordered.map(point => finiteNumber(point.benchmarkReturn));
   const domainValues = [...portfolioValues, ...benchmarkValues].filter((value): value is number => value !== null);
   if (domainValues.length < 2) return null;
   let min = Math.min(...domainValues);
@@ -280,10 +263,6 @@ function chartGeometry(points: readonly WebullChartPoint[], mode: ChartMode, ben
   const y = (value: number) => top + ((max - value) / (max - min)) * plotHeight;
   const portfolioPoints = portfolioValues.flatMap((value, index) => value === null ? [] : [{ x: x(index), y: y(value) }]);
   const benchmarkPoints = benchmarkValues.flatMap((value, index) => value === null ? [] : [{ x: x(index), y: y(value) }]);
-  const cashFlowXs = ordered.flatMap((point, index) => {
-    const flow = finiteNumber(point.externalCashFlow);
-    return flow === null || flow === 0 ? [] : [x(index)];
-  });
   const yTicks = Array.from({ length: 5 }, (_, index) => {
     const ratio = index / 4;
     const value = max - ratio * (max - min);
@@ -296,56 +275,43 @@ function chartGeometry(points: readonly WebullChartPoint[], mode: ChartMode, ben
   return {
     portfolioPath: makePath(portfolioPoints),
     benchmarkPath: makePath(benchmarkPoints),
-    cashFlowXs,
     yTicks,
     xTicks,
     pointCount: validPortfolio.length,
-    firstValue: validPortfolio[0] ?? null,
-    lastValue: validPortfolio[validPortfolio.length - 1] ?? null,
     benchmarkName,
   };
 }
 
 function PerformanceChart({ dashboard }: { dashboard: WebullDashboardData }) {
-  const [mode, setMode] = useState<ChartMode>("growth");
   const benchmarkName = dashboard.metrics?.benchmarkSymbol || "Benchmark";
-  const growthGeometry = useMemo(() => chartGeometry(dashboard.chart || [], "growth", benchmarkName), [dashboard.chart, benchmarkName]);
-  const valueGeometry = useMemo(() => chartGeometry(dashboard.chart || [], "value", benchmarkName), [dashboard.chart, benchmarkName]);
-  const geometry = mode === "growth" ? growthGeometry : valueGeometry;
-  const currency = dashboard.currency || "USD";
+  const geometry = useMemo(() => chartGeometry(dashboard.chart || [], benchmarkName), [dashboard.chart, benchmarkName]);
 
   return (
     <section className="webull-card webull-chart-card" aria-labelledby="webull-performance-heading">
       <div className="webull-card-heading">
         <div>
           <span className="webull-eyebrow">Performance record</span>
-          <h3 id="webull-performance-heading">{mode === "growth" ? "Growth of $100" : "Portfolio value"}</h3>
-        </div>
-        <div className="webull-chart-tabs" role="group" aria-label="Chart view">
-          <button type="button" className={mode === "growth" ? "webull-chart-tab webull-chart-tab-active" : "webull-chart-tab"} aria-pressed={mode === "growth"} disabled={!growthGeometry} onClick={() => setMode("growth")}>Growth of $100</button>
-          <button type="button" className={mode === "value" ? "webull-chart-tab webull-chart-tab-active" : "webull-chart-tab"} aria-pressed={mode === "value"} disabled={!valueGeometry} onClick={() => setMode("value")}>Portfolio value</button>
+          <h3 id="webull-performance-heading">Cumulative return</h3>
         </div>
       </div>
       {geometry ? (
         <>
           <div className="webull-chart-legend" aria-hidden="true">
             <span><i className="webull-chart-key-portfolio" />Portfolio</span>
-            {mode === "growth" && geometry.benchmarkPath ? <span><i className="webull-chart-key-benchmark" />{geometry.benchmarkName}</span> : null}
-            {mode === "value" && geometry.cashFlowXs.length ? <span><i className="webull-chart-key-flow" />External cash flow</span> : null}
+            {geometry.benchmarkPath ? <span><i className="webull-chart-key-benchmark" />{geometry.benchmarkName}</span> : null}
           </div>
           <div className="webull-chart-shell">
-            <svg viewBox="0 0 800 300" role="img" aria-label={`${mode === "growth" ? "Growth of 100 dollars" : "Portfolio value"} from ${geometry.pointCount} dated observations. First value ${geometry.firstValue ?? "unavailable"}; last value ${geometry.lastValue ?? "unavailable"}.`}>
-              <title>{mode === "growth" ? `Portfolio growth compared with ${geometry.benchmarkName}` : "Portfolio value with external cash-flow dates"}</title>
+            <svg viewBox="0 0 800 300" role="img" aria-label={`Cumulative percentage return from ${geometry.pointCount} dated observations compared with ${geometry.benchmarkName}.`}>
+              <title>{`Portfolio cumulative return compared with ${geometry.benchmarkName}`}</title>
               {geometry.yTicks.map(tick => (
                 <g key={tick.y}>
                   <line className="webull-chart-grid" x1="64" x2="778" y1={tick.y} y2={tick.y} />
-                  <text className="webull-chart-axis-label" x="56" y={tick.y + 4} textAnchor="end">{mode === "growth" ? displayCurrency(tick.value, currency, true) : displayCurrency(tick.value, currency, true)}</text>
+                  <text className="webull-chart-axis-label" x="56" y={tick.y + 4} textAnchor="end">{displayPercent(tick.value, 1)}</text>
                 </g>
               ))}
               {geometry.xTicks.map(tick => (
                 <text className="webull-chart-axis-label" key={`${tick.x}-${tick.label}`} x={tick.x} y="286" textAnchor={tick.x < 100 ? "start" : tick.x > 730 ? "end" : "middle"}>{tick.label}</text>
               ))}
-              {mode === "value" ? geometry.cashFlowXs.map((flowX, index) => <line className="webull-chart-flow" key={`${flowX}-${index}`} x1={flowX} x2={flowX} y1="20" y2="258" />) : null}
               {geometry.benchmarkPath ? <path className="webull-chart-benchmark" d={geometry.benchmarkPath} /> : null}
               <path className="webull-chart-portfolio" d={geometry.portfolioPath} />
             </svg>
@@ -353,18 +319,10 @@ function PerformanceChart({ dashboard }: { dashboard: WebullDashboardData }) {
           <ProvenanceLabel provenance={dashboard} fallbackThrough={dashboard.dataThrough} />
         </>
       ) : (
-        <div className="webull-empty-inline" role="status">This chart will appear after the API returns at least two reconciled observations for this view.</div>
+        <div className="webull-empty-inline" role="status">This chart will appear after at least two reconciled return observations are available.</div>
       )}
     </section>
   );
-}
-
-function holdingWeight(holding: WebullHolding, dashboard: WebullDashboardData): number | null {
-  const provided = finiteNumber(holding.weight);
-  if (provided !== null) return provided;
-  const value = finiteNumber(holding.marketValue);
-  const nav = finiteNumber(dashboard.metrics?.netAccountValue?.value);
-  return value !== null && nav !== null && nav !== 0 ? value / nav : null;
 }
 
 function HoldingsTable({ dashboard }: { dashboard: WebullDashboardData }) {
@@ -380,51 +338,21 @@ function HoldingsTable({ dashboard }: { dashboard: WebullDashboardData }) {
       </div>
       <div className="webull-table-shell" tabIndex={0} aria-label="Scrollable holdings table">
         <table className="webull-table">
-          <caption className="webull-sr-only">Current Webull positions</caption>
-          <thead><tr><th scope="col">Holding</th><th scope="col">Quantity</th><th scope="col">Market value</th><th scope="col">Account weight</th><th scope="col">Unrealized P&amp;L</th><th scope="col">Analysis</th></tr></thead>
+          <caption className="webull-sr-only">Current Webull holdings by signed account weight</caption>
+          <thead><tr><th scope="col">Holding</th><th scope="col">Account weight</th><th scope="col">Average cost / share</th><th scope="col">Unrealized return</th><th scope="col">Analysis</th></tr></thead>
           <tbody>
             {holdings.length ? holdings.map((holding, index) => {
               const eligible = isWebullHoldingEligible(holding);
               return (
-                <tr key={holding.positionId || `${holding.symbol}-${index}`}>
+                <tr key={`${holding.kind || "security"}-${holding.symbol}-${index}`}>
                   <th scope="row"><b>{holding.symbol}</b><small>{holding.name || holding.instrumentType || "Instrument details unavailable"}</small></th>
-                  <td>{displayNumber(holding.quantity, 6)}</td>
-                  <td>{displayCurrency(holding.marketValue, holding.currency || dashboard.currency || "USD")}</td>
-                  <td>{displayPercent(holdingWeight(holding, dashboard))}</td>
-                  <td>{displayCurrency(holding.unrealizedProfitLoss, holding.currency || dashboard.currency || "USD")}</td>
+                  <td>{displayPercent(holding.weight)}</td>
+                  <td>{holding.kind === "security" ? displayCostBasisPerShare(holding.costBasisPerShare) : "N/A"}</td>
+                  <td>{holding.kind === "security" ? displayPercent(holding.returnPercent) : "N/A"}</td>
                   <td><span className={eligible ? "webull-eligibility webull-eligibility-included" : "webull-eligibility"}>{eligible ? "Included" : "Excluded"}</span></td>
                 </tr>
               );
-            }) : <tr><td colSpan={6} className="webull-table-empty">No current positions were returned for this account.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function ActivitiesTable({ activities, currency }: { activities: readonly WebullActivity[]; currency: string }) {
-  return (
-    <section className="webull-card" aria-labelledby="webull-activity-heading">
-      <div className="webull-card-heading">
-        <div><span className="webull-eyebrow">Reconciled record</span><h3 id="webull-activity-heading">Recent activity</h3></div>
-        <span className="webull-count">{activities.length} record{activities.length === 1 ? "" : "s"}</span>
-      </div>
-      <div className="webull-table-shell" tabIndex={0} aria-label="Scrollable activity table">
-        <table className="webull-table webull-activity-table">
-          <caption className="webull-sr-only">Recent Webull account activity</caption>
-          <thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Description</th><th scope="col">Amount</th><th scope="col">Status</th><th scope="col">Provenance</th></tr></thead>
-          <tbody>
-            {activities.length ? activities.map(activity => (
-              <tr key={activity.activityId}>
-                <td>{displayDate(activity.date)}</td>
-                <th scope="row">{activity.type}</th>
-                <td>{[activity.symbol, activity.description].filter(Boolean).join(" · ") || "—"}</td>
-                <td>{displayCurrency(activity.amount, activity.currency || currency)}</td>
-                <td>{activity.status || "Posted"}</td>
-                <td><ProvenanceLabel provenance={activity} /></td>
-              </tr>
-            )) : <tr><td colSpan={6} className="webull-table-empty">No activity records are available for this account.</td></tr>}
+            }) : <tr><td colSpan={5} className="webull-table-empty">No current holdings were returned for this account.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -445,12 +373,12 @@ function ExclusionsTable({ dashboard }: { dashboard: WebullDashboardData }) {
       <div className="webull-table-shell" tabIndex={0} aria-label="Scrollable excluded assets table">
         <table className="webull-table">
           <caption className="webull-sr-only">Assets excluded from Portfolio Lab holdings analysis</caption>
-          <thead><tr><th scope="col">Asset</th><th scope="col">Type</th><th scope="col">Market value</th><th scope="col">Reason</th></tr></thead>
+          <thead><tr><th scope="col">Asset</th><th scope="col">Type</th><th scope="col">Account weight</th><th scope="col">Reason</th></tr></thead>
           <tbody>{exclusions.map((item, index) => (
             <tr key={`${item.symbol || item.name || "asset"}-${index}`}>
               <th scope="row">{item.symbol || item.name || "Unnamed asset"}</th>
               <td>{item.instrumentType || "—"}</td>
-              <td>{displayCurrency(item.marketValue, item.currency || dashboard.currency || "USD")}</td>
+              <td>{displayPercent(item.weight)}</td>
               <td>{item.reason}</td>
             </tr>
           ))}</tbody>
@@ -465,13 +393,13 @@ function SourceStrip({ status, dashboard, action, showActions = true, onSelectAc
   dashboard: WebullDashboardData | null;
   action: LoadingAction;
   showActions?: boolean;
-  onSelectAccount: (accountId: string) => void;
+  onSelectAccount: (accountRef: string) => void;
   onSync: () => void;
   onBackfill: () => void;
   onReviewIssues: () => void;
 }) {
   const issues = dashboard?.issues || [];
-  const selectedAccount = status.accounts.find(account => account.accountId === status.selectedAccountId);
+  const selectedAccount = status.accounts.find(account => account.accountRef === status.selectedAccountRef);
   const quality = dashboard?.quality || (dashboard?.performanceReady ? "verified" : "partial");
   const lastSuccessfulSyncAt = dashboard?.lastSuccessfulSyncAt ||
     (status.lastSyncAttempt?.status === "success" ? status.lastSyncAttempt.completedAt : null);
@@ -485,8 +413,8 @@ function SourceStrip({ status, dashboard, action, showActions = true, onSelectAc
       {status.accounts.length > 1 ? (
         <label className="webull-field">
           <span>Account</span>
-          <select value={status.selectedAccountId || ""} disabled={Boolean(action)} onChange={event => onSelectAccount(event.target.value)}>
-            {status.accounts.map(account => <option key={account.accountId} value={account.accountId}>{accountLabel(account)}</option>)}
+          <select value={status.selectedAccountRef || ""} disabled={Boolean(action)} onChange={event => onSelectAccount(event.target.value)}>
+            {status.accounts.map(account => <option key={account.accountRef} value={account.accountRef}>{accountLabel(account)}</option>)}
           </select>
         </label>
       ) : null}
@@ -511,7 +439,7 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
   action: LoadingAction;
   actionError: string;
   announcement: string;
-  onSelectAccount: (accountId: string) => void;
+  onSelectAccount: (accountRef: string) => void;
   onSync: () => void;
   onBackfill: () => void;
   onAnalyzeCurrentHoldings: (holdings: HoldingInput[]) => void;
@@ -554,7 +482,6 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
   }
 
   const metrics = dashboard.metrics || {};
-  const currency = dashboard.currency || "USD";
   const period = metrics.periodLabel || "Available period";
   const coverage = finiteNumber(dashboard.analyticsCoverage);
   const issues = dashboard.issues || [];
@@ -583,23 +510,20 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
 
       <section aria-label={`Connected account summary for ${period}`}>
         <div className="webull-metric-grid">
-          <MetricCard label="Net account value" metric={metrics.netAccountValue} fallbackUnit="currency" currency={currency} fallbackThrough={dashboard.dataThrough} detail={metrics.cashBalance ? <>Cash {displayMetric(metrics.cashBalance, "currency", currency)}</> : null} />
-          <MetricCard label="Day P&amp;L" metric={metrics.dayProfitLoss} fallbackUnit="currency" currency={currency} fallbackThrough={dashboard.dataThrough} />
-          <MetricCard label="Unrealized P&amp;L" metric={metrics.unrealizedProfitLoss} fallbackUnit="currency" currency={currency} fallbackThrough={dashboard.dataThrough} detail={metrics.marketValue ? <>Market value {displayMetric(metrics.marketValue, "currency", currency)}</> : null} />
+          <MetricCard label="Gross exposure" metric={metrics.grossExposure} fallbackUnit="percent" fallbackThrough={dashboard.dataThrough} />
+          <MetricCard label="Net exposure" metric={metrics.netExposure} fallbackUnit="percent" fallbackThrough={dashboard.dataThrough} />
+          <MetricCard label="Cash / Margin weight" metric={metrics.cashMarginWeight} fallbackUnit="percent" fallbackThrough={dashboard.dataThrough} />
         </div>
         <div className="webull-metric-grid">
-          <MetricCard label={`Time-weighted return · ${period}`} metric={metrics.timeWeightedReturn} fallbackUnit="percent" currency={currency} fallbackThrough={dashboard.dataThrough} />
+          <MetricCard label={`Time-weighted return · ${period}`} metric={metrics.timeWeightedReturn} fallbackUnit="percent" fallbackThrough={dashboard.dataThrough} />
           <MetricCard
             label={`${metrics.benchmarkSymbol || "Benchmark"} return · ${period}`}
             metric={metrics.benchmarkReturn}
             fallbackUnit="percent"
-            currency={currency}
             fallbackThrough={dashboard.dataThrough}
           />
-          <MetricCard label="Geometric excess return" metric={metrics.excessReturn} fallbackUnit="percent" currency={currency} fallbackThrough={dashboard.dataThrough} />
-          <MetricCard label="Investment gain" metric={metrics.investmentGain} fallbackUnit="currency" currency={currency} fallbackThrough={dashboard.dataThrough} />
-          <MetricCard label="Net contributions" metric={metrics.netContributions} fallbackUnit="currency" currency={currency} fallbackThrough={dashboard.dataThrough} />
-          <MetricCard label="Money-weighted return" metric={metrics.moneyWeightedReturn} fallbackUnit="percent" currency={currency} fallbackThrough={dashboard.dataThrough} />
+          <MetricCard label="Geometric excess return" metric={metrics.excessReturn} fallbackUnit="percent" fallbackThrough={dashboard.dataThrough} />
+          <MetricCard label="Money-weighted return" metric={metrics.moneyWeightedReturn} fallbackUnit="percent" fallbackThrough={dashboard.dataThrough} />
         </div>
       </section>
 
@@ -616,10 +540,7 @@ function ConnectedDashboard({ status, action, actionError, announcement, onSelec
       </section>
 
       <HoldingsTable dashboard={dashboard} />
-      <div className="webull-detail-grid">
-        <ActivitiesTable activities={dashboard.activities || []} currency={currency} />
-        <ExclusionsTable dashboard={dashboard} />
-      </div>
+      <ExclusionsTable dashboard={dashboard} />
 
       <details className="webull-issues" ref={issuesRef}>
         <summary>Data quality and reconciliation issues <span>{issues.length}</span></summary>
@@ -763,16 +684,16 @@ export default function WebullDashboard({
     window.location.assign(webullLoginUrl("/?source=webull"));
   }
 
-  function selectAccount(accountId: string) {
-    void finishAction("select", () => selectWebullAccount(accountId));
+  function selectAccount(accountRef: string) {
+    void finishAction("select", () => selectWebullAccount(accountRef));
   }
 
   function sync() {
-    void finishAction("sync", () => syncWebull(status?.selectedAccountId || null));
+    void finishAction("sync", () => syncWebull(status?.selectedAccountRef || null));
   }
 
   function backfill() {
-    void finishAction("backfill", () => backfillWebull(status?.selectedAccountId || null));
+    void finishAction("backfill", () => backfillWebull(status?.selectedAccountRef || null));
   }
 
   const webullUnavailable = failure?.kind === "disabled";

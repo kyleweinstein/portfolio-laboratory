@@ -141,6 +141,26 @@ def test_cash_activity_failure_commits_core_snapshot_with_safe_warning() -> None
     )
 
 
+def test_cash_activity_coverage_is_bounded_to_the_fetched_interval() -> None:
+    adapter = FakeWebullAdapter()
+    repository = MemoryRepository()
+    service = SyncService(adapter, repository, cash_activity_lookback_days=45)
+    service.connect(sync_selected=False)
+
+    service.sync_selected()
+
+    assert repository.cash_activity_coverage_spans(
+        adapter.account.account_id,
+        start=adapter.as_of - timedelta(days=45),
+        end=adapter.as_of,
+    )
+    assert not repository.cash_activity_coverage_spans(
+        adapter.account.account_id,
+        start=adapter.as_of - timedelta(days=46),
+        end=adapter.as_of,
+    )
+
+
 def test_sync_all_reports_a_hard_failure_after_other_accounts_commit() -> None:
     class PartiallyFailingAdapter(FakeWebullAdapter):
         def __init__(self) -> None:

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portfolio-lab.local/schemas/broker-reconciliation-v2.json",
+  "title": "Portfolio Lab private broker reconciliation export",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "accountHandle", "snapshots", "externalFlows"],
+  "properties": {
+    "schemaVersion": { "const": "portfolio-lab.broker-reconciliation.v2" },
+    "accountHandle": { "$ref": "#/$defs/accountHandle" },
+    "snapshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "netLiquidationValue"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "netLiquidationValue": { "$ref": "#/$defs/decimal" },
+          "signedCashBalance": { "$ref": "#/$defs/decimal" }
+        }
+      }
+    },
+    "externalFlows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "kind", "amount"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "kind": { "enum": ["deposit", "withdrawal", "security_transfer_in", "security_transfer_out"] },
+          "amount": { "$ref": "#/$defs/decimal" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "accountHandle": {
+      "type": "string",
+      "pattern": "^(?=.*[A-Za-z_-])[A-Za-z0-9](?:[A-Za-z0-9_-]{6,62}[A-Za-z0-9])$"
+    },
+    "decimal": { "type": "string", "pattern": "^-?\\d+\\.\\d{2}$" }
+  }
+}

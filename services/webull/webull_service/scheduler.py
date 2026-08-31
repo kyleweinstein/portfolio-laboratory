@@ -19,11 +19,53 @@ _MARKET_TIME_ZONE = ZoneInfo("America/New_York")
 
 
 def is_scheduled_sync_window(now: datetime | None = None) -> bool:
-    """Run the Railway cron during the U.S. session and one post-close cycle."""
+    """Run through the post-close retry window for late broker updates."""
     current = (now or datetime.now(UTC)).astimezone(_MARKET_TIME_ZONE)
     if current.weekday() >= 5:
         return False
-    return wall_time(9, 30) <= current.time().replace(tzinfo=None) <= wall_time(16, 20)
+    return wall_time(9, 30) <= current.time().replace(tzinfo=None) <= wall_time(18, 5)
+
+
+def is_after_close_publication_window(now: datetime | None = None) -> bool:
+    current = (now or datetime.now(UTC)).astimezone(_MARKET_TIME_ZONE)
+    if current.weekday() >= 5:
+        return False
+    # The first 15 minutes after the nominal close are reserved for the final
+    # broker reconciliation. This deliberately favors stale-data safety over
+    # publishing immediately at the bell.
+    return wall_time(16, 15) <= current.time().replace(tzinfo=None) <= wall_time(18, 5)
+
+
+def is_automatic_publication_window(now: datetime | None = None) -> bool:
+    """Finalize the one daily public revision only after late broker retries."""
+
+    current = (now or datetime.now(UTC)).astimezone(_MARKET_TIME_ZONE)
+    if current.weekday() >= 5:
+        return False
+    return wall_time(17, 55) <= current.time().replace(tzinfo=None) <= wall_time(18, 5)
+
+
+def is_reconciled_after_close_snapshot(
+    snapshot_as_of: datetime, now: datetime | None = None
+) -> bool:
+    """Require a same-market-date, post-close source snapshot.
+
+    Without an exchange-calendar dependency, a weekday/time check alone cannot
+    prove that a holiday traded. Requiring the broker source itself to carry a
+    same-date post-close as-of fails closed for stale holiday/weekend data and
+    avoids republishing the previous reconciled close as if it were current.
+    """
+
+    current = now or datetime.now(UTC)
+    if not is_after_close_publication_window(current):
+        return False
+    current_market = current.astimezone(_MARKET_TIME_ZONE)
+    source_market = snapshot_as_of.astimezone(_MARKET_TIME_ZONE)
+    return (
+        source_market.date() == current_market.date()
+        and source_market.time().replace(tzinfo=None) >= wall_time(16, 0)
+        and source_market <= current_market
+    )
 
 
 def run_cycle(settings: Settings) -> int:

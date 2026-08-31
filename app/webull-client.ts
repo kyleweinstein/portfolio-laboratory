@@ -5,11 +5,9 @@ export type WebullQuality = "verified" | "estimated" | "partial" | "stale" | "un
 export type WebullNumber = number | string | null | undefined;
 
 export type WebullAccount = {
-  accountId: string;
+  accountRef: string;
   label: string;
-  maskedIdentifier?: string | null;
   accountType?: string | null;
-  currency?: string | null;
 };
 
 export type WebullProvenance = {
@@ -24,66 +22,44 @@ export type WebullProvenance = {
 export type WebullMetric = WebullProvenance & {
   value: WebullNumber;
   label?: string | null;
-  unit?: "currency" | "percent" | "number" | string | null;
-  currency?: string | null;
+  unit?: "percent" | "number" | string | null;
 };
 
 export type WebullMetrics = {
-  netAccountValue?: WebullMetric | null;
-  cashBalance?: WebullMetric | null;
-  marketValue?: WebullMetric | null;
-  dayProfitLoss?: WebullMetric | null;
   timeWeightedReturn?: WebullMetric | null;
   benchmarkReturn?: WebullMetric | null;
   excessReturn?: WebullMetric | null;
-  investmentGain?: WebullMetric | null;
-  netContributions?: WebullMetric | null;
   moneyWeightedReturn?: WebullMetric | null;
-  unrealizedProfitLoss?: WebullMetric | null;
+  grossExposure?: WebullMetric | null;
+  netExposure?: WebullMetric | null;
+  cashMarginWeight?: WebullMetric | null;
   benchmarkSymbol?: string | null;
   periodLabel?: string | null;
 };
 
 export type WebullChartPoint = {
   date: string;
-  portfolioGrowth?: WebullNumber;
-  benchmarkGrowth?: WebullNumber;
-  portfolioValue?: WebullNumber;
-  externalCashFlow?: WebullNumber;
+  portfolioReturn?: WebullNumber;
+  benchmarkReturn?: WebullNumber;
 };
 
 export type WebullHolding = WebullProvenance & {
-  positionId?: string | null;
+  kind?: "security" | "cash_margin" | "other" | string | null;
   symbol: string;
   name?: string | null;
   instrumentType?: string | null;
-  quantity?: WebullNumber;
-  marketValue?: WebullNumber;
   weight?: WebullNumber;
-  currency?: string | null;
-  costBasis?: WebullNumber;
-  unrealizedProfitLoss?: WebullNumber;
+  costBasisPerShare?: WebullNumber;
+  returnPercent?: WebullNumber;
   eligibleForAnalysis?: boolean | null;
   exclusionReason?: string | null;
-};
-
-export type WebullActivity = WebullProvenance & {
-  activityId: string;
-  date: string;
-  type: string;
-  symbol?: string | null;
-  description?: string | null;
-  amount?: WebullNumber;
-  currency?: string | null;
-  status?: string | null;
 };
 
 export type WebullExclusion = {
   symbol?: string | null;
   name?: string | null;
   instrumentType?: string | null;
-  marketValue?: WebullNumber;
-  currency?: string | null;
+  weight?: WebullNumber;
   reason: string;
 };
 
@@ -97,8 +73,6 @@ export type WebullIssue = {
 };
 
 export type WebullDashboardData = WebullProvenance & {
-  accountId: string;
-  currency?: string | null;
   lastSuccessfulSyncAt?: string | null;
   performanceReadyFrom?: string | null;
   holdingsReady?: boolean;
@@ -107,7 +81,6 @@ export type WebullDashboardData = WebullProvenance & {
   metrics?: WebullMetrics | null;
   chart?: WebullChartPoint[] | null;
   holdings?: WebullHolding[] | null;
-  activities?: WebullActivity[] | null;
   exclusions?: WebullExclusion[] | null;
   issues?: WebullIssue[] | null;
 };
@@ -143,7 +116,7 @@ export type WebullStatus = {
   nextAction: WebullNextAction;
   csrfToken?: string | null;
   accounts: WebullAccount[];
-  selectedAccountId: string | null;
+  selectedAccountRef: string | null;
   dashboard: WebullDashboardData | null;
   issues: WebullIssue[];
 };
@@ -272,23 +245,17 @@ function fallbackNextAction(enabled: boolean, authenticated: boolean, connected:
 
 function accountFrom(value: unknown): WebullAccount | null {
   if (!isRecord(value)) return null;
-  const accountId = textValue(value.accountId) || textValue(value.id);
-  if (!accountId) return null;
-  const last4 = textValue(value.last4);
-  const maskedIdentifier = textValue(value.maskedIdentifier) || textValue(value.mask) || (last4 ? `••••${last4}` : null);
+  const accountRef = textValue(value.accountRef);
+  if (!accountRef || !/^wbr_[A-Za-z0-9_-]{24,64}$/.test(accountRef)) return null;
   return {
-    accountId,
+    accountRef,
     label: textValue(value.label) || textValue(value.displayName) || textValue(value.name) || "Webull account",
-    maskedIdentifier,
     accountType: textValue(value.accountType) || textValue(value.type),
-    currency: textValue(value.currency),
   };
 }
 
 function dashboardFrom(value: unknown): WebullDashboardData | null {
   if (!isRecord(value)) return null;
-  const accountId = textValue(value.accountId);
-  if (!accountId) return null;
   return value as WebullDashboardData;
 }
 
@@ -300,7 +267,7 @@ export function normalizeWebullStatus(payload: unknown): WebullStatus {
     ? value.accounts.map(accountFrom).filter((account): account is WebullAccount => Boolean(account))
     : [];
   const dashboard = dashboardFrom(value.dashboard);
-  const selectedAccountId = textValue(value.selectedAccountId) || dashboard?.accountId || accounts[0]?.accountId || null;
+  const selectedAccountRef = textValue(value.selectedAccountRef) || accounts[0]?.accountRef || null;
   const enabled = booleanValue(value.enabled, true);
   const authenticated = booleanValue(value.authenticated, true);
   const connected = booleanValue(value.connected, accounts.length > 0 || Boolean(dashboard));
@@ -332,7 +299,7 @@ export function normalizeWebullStatus(payload: unknown): WebullStatus {
     nextAction,
     csrfToken,
     accounts,
-    selectedAccountId,
+    selectedAccountRef,
     dashboard,
     issues,
   };
@@ -406,26 +373,26 @@ export async function connectWebull(options: WebullClientOptions = {}): Promise<
   return actionFrom(await request("/api/webull/connect", { method: "POST", body: "{}", signal: options.signal }));
 }
 
-export async function selectWebullAccount(accountId: string, options: WebullClientOptions = {}): Promise<WebullActionResult> {
+export async function selectWebullAccount(accountRef: string, options: WebullClientOptions = {}): Promise<WebullActionResult> {
   return actionFrom(await request("/api/webull/accounts/select", {
     method: "POST",
-    body: JSON.stringify({ accountId }),
+    body: JSON.stringify({ accountRef }),
     signal: options.signal,
   }));
 }
 
-export async function syncWebull(accountId: string | null, options: WebullClientOptions = {}): Promise<WebullActionResult> {
+export async function syncWebull(accountRef: string | null, options: WebullClientOptions = {}): Promise<WebullActionResult> {
   return actionFrom(await request("/api/webull/sync", {
     method: "POST",
-    body: JSON.stringify(accountId ? { accountId } : {}),
+    body: JSON.stringify(accountRef ? { accountRef } : {}),
     signal: options.signal,
   }));
 }
 
-export async function backfillWebull(accountId: string | null, options: WebullClientOptions = {}): Promise<WebullActionResult> {
+export async function backfillWebull(accountRef: string | null, options: WebullClientOptions = {}): Promise<WebullActionResult> {
   return actionFrom(await request("/api/webull/backfill", {
     method: "POST",
-    body: JSON.stringify(accountId ? { accountId } : {}),
+    body: JSON.stringify(accountRef ? { accountRef } : {}),
     signal: options.signal,
   }));
 }
@@ -450,7 +417,7 @@ function isEquityType(value: string | null | undefined): boolean {
 export function isWebullHoldingEligible(holding: WebullHolding): boolean {
   if (holding.eligibleForAnalysis === false) return false;
   if (holding.eligibleForAnalysis !== true && !isEquityType(holding.instrumentType)) return false;
-  const basis = finiteNumber(holding.marketValue) ?? finiteNumber(holding.weight);
+  const basis = finiteNumber(holding.weight);
   return Boolean(holding.symbol.trim()) && basis !== null && basis > 0;
 }
 
@@ -460,7 +427,7 @@ export function buildEligibleWebullHoldings(holdings: readonly WebullHolding[]):
   for (const holding of holdings) {
     const symbol = holding.symbol.trim().toUpperCase();
     if (!isWebullHoldingEligible(holding)) continue;
-    const basis = finiteNumber(holding.marketValue) ?? finiteNumber(holding.weight);
+    const basis = finiteNumber(holding.weight);
     if (basis === null || basis <= 0) continue;
     values.set(symbol, (values.get(symbol) || 0) + basis);
   }

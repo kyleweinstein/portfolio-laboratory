@@ -6,15 +6,9 @@ import {
   resolveGitHubCallbackUrl,
   safeReturnTo,
 } from "../../../../github-auth";
-import {
-  isWebullIntegrationEnabled,
-  jsonResponse,
-} from "../../../../webull-server";
+import { jsonResponse } from "../../../../webull-server";
 
 export async function GET(request: Request) {
-  if (!isWebullIntegrationEnabled()) {
-    return jsonResponse({ error: "The Webull integration is disabled." }, 404);
-  }
   try {
     const config = getGitHubAuthConfig();
     const callbackUrl = resolveGitHubCallbackUrl(request);

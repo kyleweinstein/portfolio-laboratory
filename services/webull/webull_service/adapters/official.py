@@ -268,7 +268,8 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         return BalanceSnapshot(
             account_id=account_id,
             as_of=_datetime(
-                _first(row, "as_of", "update_time", "timestamp"), utc_now()
+                _first(row, "as_of", "update_time", "timestamp"),
+                datetime(1970, 1, 1, tzinfo=UTC),
             ),
             currency=currency,
             equity=equity,

@@ -17,15 +17,15 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     openGraph: {
       title: "Portfolio Laboratory",
-      description: "Risk, correlation & allocation — made legible.",
+      description: "Risk, correlation & allocation - made legible.",
       type: "website",
-      images: [{ url: "/og-portfolio-lab.png", width: 1731, height: 909, alt: "The Seer's Portfolio Lab analytics preview" }],
+      images: [{ url: "/portfolio-lab-social.png", width: 1731, height: 909, alt: "Abstract Portfolio Lab correlation and allocation artwork" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "Portfolio Laboratory",
-      description: "Risk, correlation & allocation — made legible.",
-      images: ["/og-portfolio-lab.png"],
+      description: "Risk, correlation & allocation - made legible.",
+      images: ["/portfolio-lab-social.png"],
     },
   };
 }
