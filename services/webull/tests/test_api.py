@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 
 from webull_service.adapters import FakeWebullAdapter
 from webull_service.config import Settings
-from webull_service.main import create_app
+from webull_service.main import _reconciled_performance_window, create_app
+from webull_service.models import (
+    BrokerageAccount,
+    BrokerProvider,
+    CashActivity,
+    ValuationPoint,
+)
 from webull_service.repository import MemoryRepository
 
 
@@ -333,6 +339,60 @@ def test_partial_backfill_marks_performance_coverage_incomplete() -> None:
     assert "CASH_ACTIVITY_COVERAGE_INCOMPLETE" in {
         item["code"] for item in payload["dashboard"]["issues"]
     }
+
+
+def test_reconciled_performance_uses_longest_covered_prefix() -> None:
+    repository = MemoryRepository("12345")
+    account_id = "private-account"
+    start = datetime(2025, 12, 31, 21, tzinfo=UTC)
+    covered_end = datetime(2026, 7, 31, 20, tzinfo=UTC)
+    newer_uncovered = datetime(2026, 8, 28, 20, tzinfo=UTC)
+    repository.accounts[account_id] = BrokerageAccount(
+        account_id=account_id,
+        provider=BrokerProvider.WEBULL,
+        account_type="MARGIN",
+        status="ACTIVE",
+        currency="USD",
+    )
+    repository.cash_activity_coverage_ranges[account_id] = (start, covered_end)
+    valuations = [
+        ValuationPoint(at=start, value=Decimal(100), source="statement_anchor"),
+        ValuationPoint(
+            at=covered_end,
+            value=Decimal(150),
+            source="statement_anchor",
+        ),
+        ValuationPoint(at=newer_uncovered, value=Decimal(160)),
+    ]
+    flows = [
+        CashActivity(
+            account_id=account_id,
+            external_activity_id="covered-flow",
+            activity_type="WITHDRAWAL",
+            occurred_at=datetime(2026, 5, 13, 16, 30, 9, tzinfo=UTC),
+            amount=Decimal(-10),
+            is_external_flow=True,
+        ),
+        CashActivity(
+            account_id=account_id,
+            external_activity_id="uncovered-flow",
+            activity_type="DEPOSIT",
+            occurred_at=datetime(2026, 8, 10, 16, tzinfo=UTC),
+            amount=Decimal(5),
+            is_external_flow=True,
+        ),
+    ]
+
+    reconciled_values, reconciled_flows, complete = _reconciled_performance_window(
+        repository,
+        account_id,
+        valuations,
+        flows,
+    )
+
+    assert complete is True
+    assert [point.at for point in reconciled_values] == [start, covered_end]
+    assert [flow.external_activity_id for flow in reconciled_flows] == ["covered-flow"]
 
 
 def test_connect_is_idempotent_and_returns_durable_overlapping_verification() -> None:
