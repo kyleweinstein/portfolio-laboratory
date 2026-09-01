@@ -62,6 +62,7 @@ from .models import (
     ServiceNextAction,
     ServiceStatus,
     SyncResult,
+    ValuationPoint,
     VerificationAttempt,
     VerificationStage,
     VerificationState,
@@ -88,6 +89,35 @@ from .statement_import import (
     import_statement_bundle,
 )
 from .sync import SyncService
+
+
+def _reconciled_performance_window(
+    repository: PortfolioRepository,
+    account_id: str,
+    valuations: list[ValuationPoint],
+    external_flows: list[CashActivity],
+) -> tuple[list[ValuationPoint], list[CashActivity], bool]:
+    """Return the longest covered valuation prefix without fabricating later history."""
+
+    ordered_valuations = sorted(valuations, key=lambda point: point.at)
+    ordered_flows = sorted(external_flows, key=lambda activity: activity.occurred_at)
+    for end_index in range(len(ordered_valuations), 0, -1):
+        candidate = ordered_valuations[:end_index]
+        if repository.cash_activity_coverage_spans(
+            account_id,
+            start=candidate[0].at,
+            end=candidate[-1].at,
+        ):
+            return (
+                candidate,
+                [
+                    activity
+                    for activity in ordered_flows
+                    if activity.occurred_at <= candidate[-1].at
+                ],
+                True,
+            )
+    return [], [], False
 
 
 class AccountSelection(NormalizedModel):
@@ -488,20 +518,22 @@ def create_app(
         valuations, external_flows = runtime_repository.get_performance_inputs(
             account_id
         )
-        coverage_spans_performance = bool(valuations) and (
-            runtime_repository.cash_activity_coverage_spans(
+        reconciled_valuations, reconciled_flows, coverage_spans_performance = (
+            _reconciled_performance_window(
+                runtime_repository,
                 account_id,
-                start=valuations[0].at,
-                end=valuations[-1].at,
+                list(valuations),
+                list(external_flows),
             )
         )
         performance = (
             calculate_performance(
                 account_id,
-                valuations,
-                external_flows,
+                reconciled_valuations,
+                reconciled_flows,
                 statement_reconciled=any(
-                    point.source == "statement_anchor" for point in valuations
+                    point.source == "statement_anchor"
+                    for point in reconciled_valuations
                 ),
             )
             if coverage_spans_performance
@@ -1023,11 +1055,12 @@ def create_app(
         valuations, external_flows = runtime_repository.get_performance_inputs(
             config.account_id
         )
-        cash_coverage_spans_performance = bool(valuations) and (
-            runtime_repository.cash_activity_coverage_spans(
+        reconciled_valuations, reconciled_flows, cash_coverage_spans_performance = (
+            _reconciled_performance_window(
+                runtime_repository,
                 config.account_id,
-                start=valuations[0].at,
-                end=valuations[-1].at,
+                list(valuations),
+                list(external_flows),
             )
         )
         if require_publishable and not cash_coverage_spans_performance:
@@ -1038,10 +1071,11 @@ def create_app(
         performance = (
             calculate_performance(
                 config.account_id,
-                valuations,
-                external_flows,
+                reconciled_valuations,
+                reconciled_flows,
                 statement_reconciled=any(
-                    point.source == "statement_anchor" for point in valuations
+                    point.source == "statement_anchor"
+                    for point in reconciled_valuations
                 ),
             )
             if cash_coverage_spans_performance
