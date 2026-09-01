@@ -767,8 +767,8 @@ def test_postgres_import_can_claim_one_unowned_legacy_webull_account() -> None:
     assert "connection.owner_github_id = %s" in source
     assert "%s = 'webull'" in source
     assert "UPPER(account.account_type) = 'MARGIN'" in source
-    assert "state.selected_internal_account_id = account.internal_account_id" in source
-    assert "state.selected_internal_account_id IS NOT NULL" in source
+    assert "state.selected_account_id = account.account_id" in source
+    assert "state.selected_account_id IS NOT NULL" in source
     assert "account.owner_github_id IS NULL" in source
     assert "connection.owner_github_id IS NULL" in source
     assert "FOR UPDATE OF account, connection" in source
