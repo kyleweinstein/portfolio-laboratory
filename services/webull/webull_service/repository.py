@@ -864,7 +864,7 @@ class PostgresRepository:
                   ON connection.connection_id = account.connection_id
                 LEFT JOIN service_connection_state state
                   ON state.provider = 'webull'
-                 AND state.selected_internal_account_id = account.internal_account_id
+                 AND state.selected_account_id = account.account_id
                 WHERE account.account_handle = %s COLLATE "C"
                   AND (
                       (
@@ -874,7 +874,7 @@ class PostgresRepository:
                       OR (
                           %s = 'webull'
                           AND UPPER(account.account_type) = 'MARGIN'
-                          AND state.selected_internal_account_id IS NOT NULL
+                          AND state.selected_account_id IS NOT NULL
                           AND account.owner_github_id IS NULL
                           AND connection.owner_github_id IS NULL
                       )
