@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -16,6 +17,20 @@ from .cron_trigger import (
 )
 
 _REQUEST_TIMEOUT_SECONDS = 60
+_SAFE_STATEMENT_IMPORT_CODES = frozenset(
+    {
+        "STATEMENT_IMPORT_ACCOUNT_UNAVAILABLE",
+        "STATEMENT_IMPORT_AUTH_INVALID",
+        "STATEMENT_IMPORT_BUNDLE_TOO_LARGE",
+        "STATEMENT_IMPORT_DECRYPT_FAILED",
+        "STATEMENT_IMPORT_INTEGRITY_FAILED",
+        "STATEMENT_IMPORT_JSON_INVALID",
+        "STATEMENT_IMPORT_KEY_INVALID",
+        "STATEMENT_IMPORT_NOT_READY",
+        "STATEMENT_IMPORT_PERSIST_FAILED",
+        "STATEMENT_IMPORT_SCHEMA_INVALID",
+    }
+)
 
 
 class StatementImportTriggerError(RuntimeError):
@@ -24,6 +39,20 @@ class StatementImportTriggerError(RuntimeError):
     def __init__(self, category: str) -> None:
         super().__init__("The private statement import request failed.")
         self.category = category
+
+
+def _http_error_category(exc: HTTPError) -> str:
+    status_category = f"http_{exc.code}" if 100 <= exc.code <= 599 else "http_error"
+    if exc.code != 422:
+        return status_category
+    try:
+        decoded = json.loads(exc.read(4096))
+    except (AttributeError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return status_category
+    code = decoded.get("code") if isinstance(decoded, dict) else None
+    if not isinstance(code, str) or code not in _SAFE_STATEMENT_IMPORT_CODES:
+        return status_category
+    return f"{status_category}_{code.lower()}"
 
 
 def _statement_import_url(service_url: str) -> str:
@@ -73,8 +102,7 @@ def trigger_statement_import(
     except StatementImportTriggerError:
         raise
     except HTTPError as exc:
-        category = f"http_{exc.code}" if 100 <= exc.code <= 599 else "http_error"
-        raise StatementImportTriggerError(category) from None
+        raise StatementImportTriggerError(_http_error_category(exc)) from None
     except TimeoutError:
         raise StatementImportTriggerError("timeout") from None
     except URLError as exc:

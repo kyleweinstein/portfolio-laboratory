@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import io
+from urllib.error import HTTPError
 
 from webull_service import statement_import_trigger
 
@@ -84,3 +86,25 @@ def test_main_logs_no_payload_or_credentials(monkeypatch, capsys) -> None:
     assert captured.err == "Private statement import failed (payload).\n"
     assert "private-test-token" not in captured.err
     assert "private-payload" not in captured.err
+
+
+def test_http_error_category_allows_only_known_statement_code() -> None:
+    safe_error = HTTPError(
+        "http://webull-sync.railway.internal:8000/v1/statement-imports",
+        422,
+        "unprocessable",
+        {},
+        io.BytesIO(b'{"code":"STATEMENT_IMPORT_ACCOUNT_UNAVAILABLE"}'),
+    )
+    unsafe_error = HTTPError(
+        "http://webull-sync.railway.internal:8000/v1/statement-imports",
+        422,
+        "unprocessable",
+        {},
+        io.BytesIO(b'{"code":"private-account-id"}'),
+    )
+
+    assert statement_import_trigger._http_error_category(safe_error) == (
+        "http_422_statement_import_account_unavailable"
+    )
+    assert statement_import_trigger._http_error_category(unsafe_error) == "http_422"
