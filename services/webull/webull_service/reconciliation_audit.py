@@ -28,6 +28,10 @@ def reconciliation_audit(
                 """
                 SELECT account.account_type,
                        account.status,
+                       account.currency,
+                       connection.status AS connection_status,
+                       account.account_handle = account.internal_account_id::TEXT
+                           AS canonical_account_handle,
                        account.owner_github_id AS account_owner_github_id,
                        connection.owner_github_id AS connection_owner_github_id,
                        account.account_id = state.selected_account_id AS selected,
@@ -53,7 +57,9 @@ def reconciliation_audit(
                   ON anchor.account_id = account.account_id
                 WHERE account.provider = 'webull'
                 GROUP BY account.account_id, account.account_type,
-                         account.status, account.owner_github_id,
+                         account.status, account.currency,
+                         account.account_handle, account.internal_account_id,
+                         account.owner_github_id, connection.status,
                          connection.owner_github_id, state.selected_account_id
                 ORDER BY selected DESC, account.account_type
                 """
@@ -82,6 +88,9 @@ def _safe_row(
     return {
         "accountType": str(row.get("account_type") or "unknown")[:40],
         "status": str(row.get("status") or "unknown")[:40],
+        "currency": str(row.get("currency") or "unknown")[:8],
+        "connectionStatus": str(row.get("connection_status") or "missing")[:40],
+        "canonicalAccountHandle": row.get("canonical_account_handle") is True,
         "selected": row.get("selected") is True,
         "accountOwnerState": _owner_state(
             row.get("account_owner_github_id"), expected_owner_github_id
