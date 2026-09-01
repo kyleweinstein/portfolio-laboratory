@@ -855,24 +855,42 @@ class PostgresRepository:
             # cast to UUID and never compared with provider account identifiers.
             cursor.execute(
                 """
-                SELECT account.account_id, account.internal_account_id
+                SELECT account.account_id, account.internal_account_id,
+                       account.connection_id,
+                       account.owner_github_id AS account_owner_github_id,
+                       connection.owner_github_id AS connection_owner_github_id
                 FROM brokerage_accounts account
                 JOIN broker_connections connection
                   ON connection.connection_id = account.connection_id
+                LEFT JOIN service_connection_state state
+                  ON state.provider = 'webull'
+                 AND state.selected_internal_account_id = account.internal_account_id
                 WHERE account.account_handle = %s COLLATE "C"
-                  AND account.owner_github_id = %s
-                  AND connection.owner_github_id = %s
+                  AND (
+                      (
+                          account.owner_github_id = %s
+                          AND connection.owner_github_id = %s
+                      )
+                      OR (
+                          %s = 'webull'
+                          AND UPPER(account.account_type) = 'MARGIN'
+                          AND state.selected_internal_account_id IS NOT NULL
+                          AND account.owner_github_id IS NULL
+                          AND connection.owner_github_id IS NULL
+                      )
+                  )
                   AND account.provider = %s
                   AND connection.provider = %s
                   AND account.currency = 'USD'
                   AND UPPER(account.status) IN ('ACTIVE', 'READY')
                   AND connection.status = 'READY'
-                FOR UPDATE OF account
+                FOR UPDATE OF account, connection
                 """,
                 (
                     bundle.account_handle,
                     owner_github_id,
                     owner_github_id,
+                    target_provider,
                     target_provider,
                     target_provider,
                 ),
@@ -883,6 +901,35 @@ class PostgresRepository:
             account = accounts[0]
             account_id = str(account["account_id"])
             internal_account_id = str(account["internal_account_id"])
+
+            # Legacy Webull rows predate owner scoping. Only the currently
+            # selected MARGIN account may claim a fully-unowned account and
+            # connection. Mixed or different ownership never reaches this row.
+            if (
+                target_provider == "webull"
+                and account["account_owner_github_id"] is None
+                and account["connection_owner_github_id"] is None
+            ):
+                cursor.execute(
+                    """
+                    UPDATE broker_connections
+                    SET owner_github_id = %s, updated_at = NOW()
+                    WHERE connection_id = %s AND owner_github_id IS NULL
+                    """,
+                    (owner_github_id, account["connection_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise StatementImportError("STATEMENT_IMPORT_ACCOUNT_UNAVAILABLE")
+                cursor.execute(
+                    """
+                    UPDATE brokerage_accounts
+                    SET owner_github_id = %s, updated_at = NOW()
+                    WHERE account_id = %s AND owner_github_id IS NULL
+                    """,
+                    (owner_github_id, account_id),
+                )
+                if cursor.rowcount != 1:
+                    raise StatementImportError("STATEMENT_IMPORT_ACCOUNT_UNAVAILABLE")
 
             cursor.execute(
                 """
