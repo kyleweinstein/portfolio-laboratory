@@ -60,6 +60,7 @@ from .statement_import import (
 
 _VERIFICATION_LEASE = timedelta(minutes=7)
 _MARKET_TIME_ZONE = ZoneInfo("America/New_York")
+_UNKNOWN_AS_OF = datetime(1970, 1, 1, tzinfo=UTC)
 _INCOMPLETE_CASH_ACTIVITY_COVERAGE_MESSAGE = (
     "Cash activity coverage remains incomplete; performance remains unavailable."
 )
@@ -1233,7 +1234,8 @@ class PostgresRepository:
                     FROM portfolio_snapshots snapshot
                     JOIN brokerage_accounts account
                       ON account.account_id = snapshot.account_id
-                    WHERE (captured_at AT TIME ZONE 'America/New_York')::time >= TIME '16:00'
+                    WHERE captured_at > %s
+                      AND (captured_at AT TIME ZONE 'America/New_York')::time >= TIME '16:00'
                     UNION ALL
                     SELECT account_id, statement_date AS valuation_at, ending_equity AS value, imported_at AS created_at,
                            'statement_anchor' AS source
@@ -1247,7 +1249,7 @@ class PostgresRepository:
                 )
                 SELECT valuation_at, value, source FROM daily ORDER BY valuation_at
                 """,
-                parameters,
+                [_UNKNOWN_AS_OF, *parameters],
             )
             valuations = [
                 ValuationPoint(
@@ -3034,6 +3036,7 @@ class MemoryRepository:
                 source=f"{state.account.provider.value}_snapshot",
             )
             for state in self.snapshots.get(account_id, [])
+            if state.balance.as_of > _UNKNOWN_AS_OF
         ]
         valuations.extend(
             ValuationPoint(

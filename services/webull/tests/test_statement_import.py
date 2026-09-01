@@ -14,7 +14,13 @@ from fastapi.testclient import TestClient
 from webull_service.adapters import FakeWebullAdapter
 from webull_service.config import Settings
 from webull_service.main import create_app
-from webull_service.models import BrokerageAccount, BrokerProvider, CashActivity
+from webull_service.models import (
+    BalanceSnapshot,
+    BrokerageAccount,
+    BrokerProvider,
+    CashActivity,
+    PortfolioState,
+)
 from webull_service.performance import calculate_performance
 from webull_service.repository import MemoryRepository
 from webull_service.statement_import import (
@@ -714,6 +720,21 @@ def test_webull_statement_and_activity_ledger_reconcile_sparse_history():
     )
     repository.connect_accounts([account])
     account_handle = repository.account_handles[account.account_id]
+    repository.snapshots[account.account_id] = [
+        PortfolioState(
+            account=account,
+            balance=BalanceSnapshot(
+                account_id=account.account_id,
+                as_of=datetime(1970, 1, 1, tzinfo=UTC),
+                currency="USD",
+                equity=Decimal(1),
+                cash=Decimal(0),
+                market_value=Decimal(1),
+            ),
+            positions=(),
+            snapshot_id="unknown-timestamp-sentinel",
+        )
+    ]
 
     receipt = import_statement_bundle(
         encrypted_payload=_encrypted(_webull_bundle(account_handle), key),
@@ -725,6 +746,7 @@ def test_webull_statement_and_activity_ledger_reconcile_sparse_history():
     assert receipt.publication_eligible is True
     valuations, flows = repository.get_performance_inputs(account.account_id)
     assert len(valuations) == 2
+    assert all(point.at > datetime(1970, 1, 1, tzinfo=UTC) for point in valuations)
     assert len(flows) == 1
     assert flows[0].occurred_at == datetime(2026, 5, 13, 16, 30, 9, tzinfo=UTC)
     assert repository.cash_activity_coverage_spans(
