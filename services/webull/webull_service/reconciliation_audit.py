@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from hashlib import sha256
 
 import psycopg
@@ -36,6 +36,10 @@ def reconciliation_audit(
                        connection.status AS connection_status,
                        account.account_handle = account.internal_account_id::TEXT
                            AS canonical_account_handle,
+                       account.cash_activity_coverage_start,
+                       account.cash_activity_coverage_end,
+                       account.cash_activity_gap_start,
+                       account.cash_activity_gap_end,
                        account.owner_github_id AS account_owner_github_id,
                        connection.owner_github_id AS connection_owner_github_id,
                        account.account_id = state.selected_account_id AS selected,
@@ -49,7 +53,56 @@ def reconciliation_audit(
                        ) AS coverage_start,
                        MAX(batch.coverage_end) FILTER (
                            WHERE batch.publication_eligible = TRUE
-                       ) AS coverage_end
+                       ) AS coverage_end,
+                       MIN(
+                           (anchor.statement_date AT TIME ZONE
+                               'America/New_York')::DATE
+                       ) AS anchor_start,
+                       MAX(
+                           (anchor.statement_date AT TIME ZONE
+                               'America/New_York')::DATE
+                       ) AS anchor_end,
+                       (
+                           SELECT COUNT(*)
+                           FROM portfolio_snapshots snapshot
+                           WHERE snapshot.account_id = account.account_id
+                             AND (snapshot.captured_at AT TIME ZONE
+                                 'America/New_York')::TIME >= TIME '16:00'
+                       ) AS after_close_valuations,
+                       (
+                           SELECT MIN(
+                               (snapshot.captured_at AT TIME ZONE
+                                   'America/New_York')::DATE
+                           )
+                           FROM portfolio_snapshots snapshot
+                           WHERE snapshot.account_id = account.account_id
+                             AND (snapshot.captured_at AT TIME ZONE
+                                 'America/New_York')::TIME >= TIME '16:00'
+                       ) AS valuation_start,
+                       (
+                           SELECT MAX(
+                               (snapshot.captured_at AT TIME ZONE
+                                   'America/New_York')::DATE
+                           )
+                           FROM portfolio_snapshots snapshot
+                           WHERE snapshot.account_id = account.account_id
+                             AND (snapshot.captured_at AT TIME ZONE
+                                 'America/New_York')::TIME >= TIME '16:00'
+                       ) AS valuation_end,
+                       (
+                           SELECT COUNT(*)
+                           FROM cash_activities activity
+                           WHERE activity.account_id = account.account_id
+                             AND activity.is_external_flow = TRUE
+                       ) AS provider_external_flows,
+                       (
+                           SELECT COUNT(*)
+                           FROM statement_external_flows flow
+                           WHERE flow.internal_account_id =
+                               account.internal_account_id
+                             AND flow.valuation_status = 'reported'
+                             AND flow.amount IS NOT NULL
+                       ) AS statement_external_flows
                 FROM brokerage_accounts account
                 LEFT JOIN broker_connections connection
                   ON connection.connection_id = account.connection_id
@@ -63,6 +116,10 @@ def reconciliation_audit(
                 GROUP BY account.account_id, account.account_type,
                          account.status, account.currency,
                          account.account_handle, account.internal_account_id,
+                         account.cash_activity_coverage_start,
+                         account.cash_activity_coverage_end,
+                         account.cash_activity_gap_start,
+                         account.cash_activity_gap_end,
                          account.owner_github_id, connection.provider,
                          connection.status,
                          connection.owner_github_id, state.selected_account_id
@@ -92,6 +149,8 @@ def _safe_row(
     expected_account_handle_sha256: str = "",
 ) -> dict[str, object]:
     def safe_date(value: object) -> str | None:
+        if isinstance(value, datetime):
+            return value.date().isoformat()
         return value.isoformat() if isinstance(value, date) else None
 
     return {
@@ -116,6 +175,17 @@ def _safe_row(
         "anchors": int(row.get("anchors") or 0),
         "coverageStart": safe_date(row.get("coverage_start")),
         "coverageEnd": safe_date(row.get("coverage_end")),
+        "anchorStart": safe_date(row.get("anchor_start")),
+        "anchorEnd": safe_date(row.get("anchor_end")),
+        "afterCloseValuations": int(row.get("after_close_valuations") or 0),
+        "valuationStart": safe_date(row.get("valuation_start")),
+        "valuationEnd": safe_date(row.get("valuation_end")),
+        "providerExternalFlows": int(row.get("provider_external_flows") or 0),
+        "statementExternalFlows": int(row.get("statement_external_flows") or 0),
+        "providerCoverageStart": safe_date(row.get("cash_activity_coverage_start")),
+        "providerCoverageEnd": safe_date(row.get("cash_activity_coverage_end")),
+        "providerGapStart": safe_date(row.get("cash_activity_gap_start")),
+        "providerGapEnd": safe_date(row.get("cash_activity_gap_end")),
     }
 
 
