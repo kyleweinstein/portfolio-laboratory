@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, ClassVar, Literal, Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import (
@@ -25,6 +26,7 @@ from pydantic import (
 )
 
 SCHEMA_VERSION = "portfolio-lab.m1-statement-backfill.v2"
+WEBULL_SCHEMA_VERSION = "portfolio-lab.webull-reconciliation.v1"
 M1_STATEMENT_OUTPUT_KEY_NAME = "M1_STATEMENT_OUTPUT_KEY"
 MAX_ENCRYPTED_BUNDLE_BYTES = 16 * 1024 * 1024
 MAX_DECRYPTED_BUNDLE_BYTES = 12 * 1024 * 1024
@@ -124,11 +126,14 @@ def _validate_account_handle(value: str) -> str:
 
 class StatementSource(_StrictImportModel):
     source_id: StrictStr = Field(alias="sourceId", pattern=_SOURCE_ID_RE)
-    provider: Literal["m1", "apex"]
+    provider: Literal["m1", "apex", "webull"]
+    source_kind: Literal["statement", "activity_ledger"] = Field(
+        default="statement", alias="sourceKind"
+    )
     parser_version: StrictStr = Field(
         alias="parserVersion", min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._-]+$"
     )
-    page_count: StrictInt = Field(alias="pageCount", ge=1, le=10_000)
+    page_count: StrictInt = Field(alias="pageCount", ge=0, le=10_000)
     statement_start: Date = Field(alias="statementStart")
     statement_end: Date = Field(alias="statementEnd")
     account_fingerprint: StrictStr = Field(
@@ -183,6 +188,7 @@ class StatementExternalFlowImport(_StrictImportModel):
     source_id: StrictStr = Field(alias="sourceId", pattern=_SOURCE_ID_RE)
     sequence: StrictInt = Field(ge=1, le=100_000)
     date: Date
+    occurred_at: datetime | None = Field(default=None, alias="occurredAt")
     kind: Literal[
         "deposit",
         "withdrawal",
@@ -195,7 +201,7 @@ class StatementExternalFlowImport(_StrictImportModel):
     valuation_status: Literal["reported", "unavailable"] = Field(
         alias="valuationStatus"
     )
-    evidence: Literal["statement_activity"]
+    evidence: Literal["statement_activity", "broker_activity_ledger"]
 
     @field_validator("account_handle")
     @classmethod
@@ -206,6 +212,11 @@ class StatementExternalFlowImport(_StrictImportModel):
     @classmethod
     def parse_flow_date(cls, value: Any) -> Date:
         return _parse_exact_date(value)
+
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def parse_flow_time(cls, value: Any) -> datetime | None:
+        return None if value is None else _parse_utc_timestamp(value)
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -232,6 +243,9 @@ class StatementCoverage(_StrictImportModel):
     end: Date
     statement_count: StrictInt = Field(alias="statementCount", ge=1, le=10_000)
     contiguous_monthly_coverage: StrictBool = Field(alias="contiguousMonthlyCoverage")
+    external_flow_coverage_complete: StrictBool = Field(
+        default=False, alias="externalFlowCoverageComplete"
+    )
 
     @field_validator("start", "end", mode="before")
     @classmethod
@@ -275,7 +289,9 @@ class StatementValidation(_StrictImportModel):
 
 
 class StatementBackfillBundleV2(_StrictImportModel):
-    schema_version: Literal[SCHEMA_VERSION] = Field(alias="schemaVersion")
+    schema_version: Literal[SCHEMA_VERSION, WEBULL_SCHEMA_VERSION] = Field(
+        alias="schemaVersion"
+    )
     batch_id: UUID = Field(alias="batchId")
     generated_at: datetime = Field(alias="generatedAt")
     account_handle: StrictStr = Field(
@@ -367,10 +383,13 @@ def statement_source_content_hashes(
 
     result: dict[str, str] = {}
     for source in bundle.sources:
+        anchor = anchor_by_source.get(source.source_id)
         content = {
             "source": source.model_dump(mode="json", by_alias=True),
-            "anchor": anchor_by_source[source.source_id].model_dump(
-                mode="json", by_alias=True
+            "anchor": (
+                anchor.model_dump(mode="json", by_alias=True)
+                if anchor is not None
+                else None
             ),
             "externalFlows": [
                 flow.model_dump(mode="json", by_alias=True)
@@ -393,9 +412,18 @@ def statement_source_content_hashes(
 def statement_publication_eligible(bundle: StatementBackfillBundleV2) -> bool:
     """Apply service-side coverage gates in addition to producer validation."""
 
+    webull_reconciled = (
+        bundle.schema_version == WEBULL_SCHEMA_VERSION
+        and all(source.provider == "webull" for source in bundle.sources)
+        and any(source.source_kind == "activity_ledger" for source in bundle.sources)
+        and bundle.validation.coverage.external_flow_coverage_complete
+        and len(bundle.anchors) >= 2
+    )
     return bool(
         bundle.validation.publication_ready
-        and bundle.validation.coverage.contiguous_monthly_coverage
+        and (
+            bundle.validation.coverage.contiguous_monthly_coverage or webull_reconciled
+        )
         and all(
             flow.valuation_status == "reported" and flow.amount is not None
             for flow in bundle.external_flows
@@ -473,6 +501,17 @@ def _validate_bundle_integrity(bundle: StatementBackfillBundleV2) -> None:
         raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
     if any(source.statement_start > source.statement_end for source in bundle.sources):
         raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
+    if any(
+        (source.source_kind == "statement" and source.page_count < 1)
+        or (source.source_kind == "activity_ledger" and source.page_count != 0)
+        for source in bundle.sources
+    ):
+        raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
+    if bundle.schema_version == SCHEMA_VERSION:
+        if any(source.provider == "webull" for source in bundle.sources):
+            raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
+    elif any(source.provider != "webull" for source in bundle.sources):
+        raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
 
     anchor_keys: set[tuple[str, Date]] = set()
     anchored_source_ids: set[str] = set()
@@ -491,6 +530,7 @@ def _validate_bundle_integrity(bundle: StatementBackfillBundleV2) -> None:
         if (
             anchor.account_handle != bundle.account_handle
             or source is None
+            or source.source_kind != "statement"
             or anchor.date != source.statement_end
             or key in anchor_keys
             or anchor.source_id in anchored_source_ids
@@ -512,9 +552,13 @@ def _validate_bundle_integrity(bundle: StatementBackfillBundleV2) -> None:
         if (
             flow.account_handle != bundle.account_handle
             or source is None
-            or flow.source_id not in anchored_source_ids
             or not source.statement_start <= flow.date <= source.statement_end
             or key in flow_keys
+            or (
+                flow.occurred_at is not None
+                and flow.occurred_at.astimezone(ZoneInfo("America/New_York")).date()
+                != flow.date
+            )
             or (flow.valuation_status == "reported") != (flow.amount is not None)
             or (
                 flow.amount is not None
@@ -535,11 +579,15 @@ def _validate_bundle_integrity(bundle: StatementBackfillBundleV2) -> None:
         for sequences in sequences_by_source.values()
     ):
         raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
+    referenced_source_ids = anchored_source_ids | {
+        flow.source_id for flow in bundle.external_flows
+    }
+    if referenced_source_ids != set(source_by_id):
+        raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
 
     coverage = bundle.validation.coverage
-    anchored_sources = [source_by_id[source_id] for source_id in anchored_source_ids]
     if (
-        coverage.start != min(source.statement_start for source in anchored_sources)
+        coverage.start != min(source.statement_start for source in bundle.sources)
         or coverage.end != max(anchor.date for anchor in bundle.anchors)
         or coverage.statement_count != len(bundle.anchors)
         or coverage.start > coverage.end

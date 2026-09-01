@@ -273,6 +273,8 @@ def _performance_quality(
 ) -> PublicationQuality:
     if performance is None or not performance.periods:
         return PublicationQuality.UNAVAILABLE
+    if performance.quality == "statement_reconciled":
+        return PublicationQuality.STATEMENT_RECONCILED
     if performance.quality == "verified":
         return PublicationQuality.PORTFOLIO_LAB_COMPUTED
     return PublicationQuality.ESTIMATED

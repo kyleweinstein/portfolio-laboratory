@@ -152,6 +152,8 @@ def calculate_performance(
     account_id: str,
     valuations: Iterable[ValuationPoint],
     activities: Iterable[CashActivity],
+    *,
+    statement_reconciled: bool = False,
 ) -> PerformanceReport:
     points_by_time = {point.at: point for point in valuations}
     points = sorted(points_by_time.values(), key=lambda point: point.at)
@@ -221,6 +223,10 @@ def calculate_performance(
         quality=(
             "verified"
             if periods and all(point.source.endswith("_snapshot") for point in points)
+            else "statement_reconciled"
+            if periods
+            and statement_reconciled
+            and any(point.source == "statement_anchor" for point in points)
             else "estimated"
             if periods
             else "unavailable"

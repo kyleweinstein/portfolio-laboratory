@@ -46,6 +46,7 @@ from .models import (
 )
 from .publication import validate_public_analytics, validate_publication_title
 from .statement_import import (
+    WEBULL_SCHEMA_VERSION,
     PreparedStatementImport,
     StatementAnchorImport,
     StatementBackfillBundleV2,
@@ -841,6 +842,9 @@ class PostgresRepository:
         """Resolve and persist a validated bundle in one private transaction."""
 
         bundle = prepared.bundle
+        target_provider = (
+            "webull" if bundle.schema_version == WEBULL_SCHEMA_VERSION else "plaid_m1"
+        )
         source_hashes = statement_source_content_hashes(bundle)
         with (
             self._connect() as connection,
@@ -858,14 +862,20 @@ class PostgresRepository:
                 WHERE account.account_handle = %s COLLATE "C"
                   AND account.owner_github_id = %s
                   AND connection.owner_github_id = %s
-                  AND account.provider = 'plaid_m1'
-                  AND connection.provider = 'plaid_m1'
+                  AND account.provider = %s
+                  AND connection.provider = %s
                   AND account.currency = 'USD'
                   AND UPPER(account.status) IN ('ACTIVE', 'READY')
                   AND connection.status = 'READY'
                 FOR UPDATE OF account
                 """,
-                (bundle.account_handle, owner_github_id, owner_github_id),
+                (
+                    bundle.account_handle,
+                    owner_github_id,
+                    owner_github_id,
+                    target_provider,
+                    target_provider,
+                ),
             )
             accounts = cursor.fetchall()
             if len(accounts) != 1:
@@ -880,9 +890,10 @@ class PostgresRepository:
                     batch_id, internal_account_id, owner_github_id, account_handle,
                     payload_sha256, source_document_count, anchor_count,
                     external_flow_count, coverage_start, coverage_end,
-                    contiguous_monthly_coverage, publication_eligible
+                    contiguous_monthly_coverage,
+                    external_flow_coverage_complete, publication_eligible
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (batch_id) DO NOTHING
                 """,
@@ -898,6 +909,7 @@ class PostgresRepository:
                     bundle.validation.coverage.start,
                     bundle.validation.coverage.end,
                     bundle.validation.coverage.contiguous_monthly_coverage,
+                    bundle.validation.coverage.external_flow_coverage_complete,
                     statement_publication_eligible(bundle),
                 ),
             )
@@ -908,7 +920,8 @@ class PostgresRepository:
                     SELECT internal_account_id, owner_github_id, account_handle,
                            payload_sha256, source_document_count, anchor_count,
                            external_flow_count, coverage_start, coverage_end,
-                           contiguous_monthly_coverage, publication_eligible
+                           contiguous_monthly_coverage,
+                           external_flow_coverage_complete, publication_eligible
                     FROM statement_import_batches
                     WHERE batch_id = %s
                     """,
@@ -929,6 +942,9 @@ class PostgresRepository:
                     contiguous_monthly_coverage=(
                         bundle.validation.coverage.contiguous_monthly_coverage
                     ),
+                    external_flow_coverage_complete=(
+                        bundle.validation.coverage.external_flow_coverage_complete
+                    ),
                     publication_eligible=statement_publication_eligible(bundle),
                 ):
                     raise StatementImportError("STATEMENT_IMPORT_INTEGRITY_FAILED")
@@ -944,9 +960,10 @@ class PostgresRepository:
                     """
                     INSERT INTO statement_import_sources (
                         source_id, internal_account_id, source_content_sha256,
-                        provider, parser_version, page_count, statement_start,
+                        provider, source_kind, parser_version, page_count,
+                        statement_start,
                         statement_end, account_fingerprint
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (source_id) DO NOTHING
                     """,
                     (
@@ -954,6 +971,7 @@ class PostgresRepository:
                         internal_account_id,
                         source_hashes[source.source_id],
                         source.provider,
+                        source.source_kind,
                         source.parser_version,
                         source.page_count,
                         source.statement_start,
@@ -1050,9 +1068,12 @@ class PostgresRepository:
                     """
                     INSERT INTO statement_external_flows (
                         internal_account_id, batch_id, source_id, sequence,
-                        flow_date, kind, amount, currency, valuation_status,
+                        flow_date, flow_at, kind, amount, currency,
+                        valuation_status,
                         evidence
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
                     ON CONFLICT (internal_account_id, source_id, sequence)
                     DO NOTHING
                     """,
@@ -1062,6 +1083,7 @@ class PostgresRepository:
                         flow.source_id,
                         flow.sequence,
                         flow.date,
+                        flow.occurred_at,
                         flow.kind,
                         flow.amount,
                         flow.currency,
@@ -1071,7 +1093,8 @@ class PostgresRepository:
                 )
                 cursor.execute(
                     """
-                    SELECT flow_date, kind, amount, currency, valuation_status,
+                    SELECT flow_date, flow_at, kind, amount, currency,
+                           valuation_status,
                            evidence
                     FROM statement_external_flows
                     WHERE internal_account_id = %s
@@ -1084,6 +1107,7 @@ class PostgresRepository:
                 if stored_flow is None or not _statement_flow_matches(
                     stored_flow,
                     flow_date=flow.date,
+                    flow_at=flow.occurred_at,
                     kind=flow.kind,
                     amount=flow.amount,
                     currency=flow.currency,
@@ -1243,8 +1267,11 @@ class PostgresRepository:
                                WHEN flow.kind = 'withdrawal' THEN 'WITHDRAWAL'
                                ELSE 'TRANSFER'
                            END AS activity_type,
-                           (flow.flow_date + TIME '16:00') AT TIME ZONE
-                               'America/New_York' AS occurred_at,
+                           COALESCE(
+                               flow.flow_at,
+                               (flow.flow_date + TIME '16:00') AT TIME ZONE
+                                   'America/New_York'
+                           ) AS occurred_at,
                            flow.amount,
                            flow.currency,
                            'POSTED'::TEXT AS status,
@@ -2164,17 +2191,17 @@ class PostgresRepository:
         provider = account.provider.value
         owner_github_id = self._portfolio_owner_github_id or None
         connection_id: str | None = None
-        if provider == "plaid_m1" and owner_github_id is not None:
+        if provider in {"plaid_m1", "webull"} and owner_github_id is not None:
             cursor.execute(
                 """
                 SELECT connection_id, owner_github_id
                 FROM broker_connections
-                WHERE provider = 'plaid_m1'
+                WHERE provider = %s
                   AND status = 'READY'
                   AND (owner_github_id = %s OR owner_github_id IS NULL)
                 ORDER BY updated_at DESC, connection_id
                 """,
-                (owner_github_id,),
+                (provider, owner_github_id),
             )
             ready_connections = cursor.fetchall()
             if len(ready_connections) == 1:
@@ -2744,7 +2771,7 @@ class MemoryRepository:
         intervals.extend(
             _statement_coverage_interval(batch[7], batch[8])
             for batch in self.statement_import_batches.values()
-            if batch[0] == account_id and batch[10] is True
+            if batch[0] == account_id and batch[11] is True
         )
         return _coverage_intervals_span(intervals, start=start, end=end)
 
@@ -2797,6 +2824,9 @@ class MemoryRepository:
         prepared: PreparedStatementImport,
     ) -> StatementImportCommitResult:
         bundle = prepared.bundle
+        target_provider = (
+            "webull" if bundle.schema_version == WEBULL_SCHEMA_VERSION else "plaid_m1"
+        )
         source_hashes = statement_source_content_hashes(bundle)
         with self._statement_import_lock:
             candidates = [
@@ -2809,7 +2839,7 @@ class MemoryRepository:
                 == bundle.account_handle
                 and self.account_owners.get(account_id) == owner_github_id
                 and account_id in self.ready_account_ids
-                and account.provider.value == "plaid_m1"
+                and account.provider.value == target_provider
                 and account.currency == "USD"
             ]
             if len(candidates) != 1:
@@ -2828,6 +2858,7 @@ class MemoryRepository:
                 bundle.validation.coverage.start,
                 bundle.validation.coverage.end,
                 bundle.validation.coverage.contiguous_monthly_coverage,
+                bundle.validation.coverage.external_flow_coverage_complete,
                 statement_publication_eligible(bundle),
             )
             existing_batch = self.statement_import_batches.get(batch_key)
@@ -3009,7 +3040,11 @@ class MemoryRepository:
                     account_id=account_id,
                     external_activity_id=f"statement:{source_id}:{sequence}",
                     activity_type=_statement_activity_type(flow.kind),
-                    occurred_at=_statement_market_close(flow.date),
+                    occurred_at=(
+                        flow.occurred_at
+                        if flow.occurred_at is not None
+                        else _statement_market_close(flow.date)
+                    ),
                     amount=flow.amount,
                     currency=flow.currency,
                     status="POSTED",
@@ -3586,6 +3621,7 @@ def _statement_batch_matches(
     coverage_start: date,
     coverage_end: date,
     contiguous_monthly_coverage: bool,
+    external_flow_coverage_complete: bool,
     publication_eligible: bool,
 ) -> bool:
     return (
@@ -3599,6 +3635,8 @@ def _statement_batch_matches(
         and row["coverage_start"] == coverage_start
         and row["coverage_end"] == coverage_end
         and bool(row["contiguous_monthly_coverage"]) is contiguous_monthly_coverage
+        and bool(row["external_flow_coverage_complete"])
+        is external_flow_coverage_complete
         and bool(row["publication_eligible"]) is publication_eligible
     )
 
@@ -3635,6 +3673,7 @@ def _statement_flow_matches(
     row: dict,
     *,
     flow_date: date,
+    flow_at: datetime | None,
     kind: str,
     amount: Decimal | None,
     currency: str,
@@ -3643,6 +3682,8 @@ def _statement_flow_matches(
 ) -> bool:
     return (
         row["flow_date"] == flow_date
+        and (row["flow_at"].astimezone(UTC) if row["flow_at"] is not None else None)
+        == flow_at
         and row["kind"] == kind
         and row["amount"] == amount
         and row["currency"] == currency
