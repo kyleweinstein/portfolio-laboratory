@@ -83,6 +83,24 @@ def test_main_skips_outside_market_window_without_network(monkeypatch, capsys) -
     assert "skipped outside" in capsys.readouterr().out
 
 
+def test_main_runs_private_reconciliation_audit_before_market_window(
+    monkeypatch,
+) -> None:
+    called = False
+
+    def audit() -> int:
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setenv("BROKER_RECONCILIATION_AUDIT_ENABLED", "true")
+    monkeypatch.setattr(cron_trigger, "reconciliation_audit_main", audit)
+    monkeypatch.setattr(cron_trigger, "is_scheduled_sync_window", lambda: False)
+
+    assert cron_trigger.main() == 0
+    assert called is True
+
+
 def test_main_reports_network_failure_without_sensitive_details(
     monkeypatch, capsys
 ) -> None:

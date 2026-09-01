@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from .reconciliation_audit import main as reconciliation_audit_main
 from .scheduler import is_scheduled_sync_window
 
 _REQUEST_TIMEOUT_SECONDS = 360
@@ -103,6 +104,9 @@ def trigger_scheduled_sync(
 
 
 def main() -> int:
+    if os.getenv("BROKER_RECONCILIATION_AUDIT_ENABLED", "").strip().lower() == "true":
+        return reconciliation_audit_main()
+
     if not is_scheduled_sync_window():
         print(
             "Webull scheduled sync skipped outside the configured market-hours window."
