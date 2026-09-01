@@ -12,6 +12,8 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
             "internal_account_id": "private-internal-id",
             "account_type": "MARGIN",
             "status": "ACTIVE",
+            "account_owner_github_id": "expected-owner",
+            "connection_owner_github_id": None,
             "selected": True,
             "statement_batches": 1,
             "eligible_batches": 1,
@@ -19,13 +21,16 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
             "coverage_start": date(2025, 12, 1),
             "coverage_end": date(2026, 7, 31),
             "ending_equity": "private-value",
-        }
+        },
+        "expected-owner",
     )
 
     assert projected == {
         "accountType": "MARGIN",
         "status": "ACTIVE",
         "selected": True,
+        "accountOwnerState": "matches",
+        "connectionOwnerState": "unowned",
         "statementBatches": 1,
         "eligibleBatches": 1,
         "anchors": 2,
@@ -36,3 +41,19 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
     assert "private-account-id" not in rendered
     assert "private-internal-id" not in rendered
     assert "private-value" not in rendered
+    assert "expected-owner" not in rendered
+
+
+def test_audit_owner_state_fails_closed_without_exposing_ids() -> None:
+    projected = _safe_row(
+        {
+            "account_owner_github_id": "another-owner",
+            "connection_owner_github_id": "expected-owner",
+        },
+        "expected-owner",
+    )
+
+    assert projected["accountOwnerState"] == "conflict"
+    assert projected["connectionOwnerState"] == "matches"
+    assert "another-owner" not in str(projected)
+    assert "expected-owner" not in str(projected)
