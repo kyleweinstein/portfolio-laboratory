@@ -14,15 +14,18 @@ from webull_service.adapters import FakeWebullAdapter
 from webull_service.config import Settings
 from webull_service.main import create_app
 from webull_service.models import BrokerageAccount, BrokerProvider, CashActivity
+from webull_service.performance import calculate_performance
 from webull_service.repository import MemoryRepository
 from webull_service.statement_import import (
     SCHEMA_VERSION,
+    WEBULL_SCHEMA_VERSION,
     PreparedStatementImport,
     StatementImportDisposition,
     StatementImportError,
     decrypt_statement_bundle,
     import_statement_bundle,
     prepare_statement_import,
+    statement_publication_eligible,
 )
 
 ACCOUNT_HANDLE = "plh_synthetic_owner_handle_0001"
@@ -91,6 +94,112 @@ def _bundle() -> dict[str, object]:
                 "status": "passed",
                 "privateInputSourceId": RECONCILIATION_SOURCE_ID,
                 "matchedAnchors": 1,
+                "mismatchedAnchors": 0,
+                "matchedFlows": 1,
+                "mismatchedFlows": 0,
+                "issues": [],
+            },
+        },
+    }
+
+
+def _webull_bundle(account_handle: str) -> dict[str, object]:
+    start_source = "sha256:" + "d" * 64
+    end_source = "sha256:" + "e" * 64
+    ledger_source = "sha256:" + "f" * 64
+    return {
+        "schemaVersion": WEBULL_SCHEMA_VERSION,
+        "batchId": "00000000-0000-4000-8000-000000000002",
+        "generatedAt": "2026-08-01T01:00:00Z",
+        "accountHandle": account_handle,
+        "sources": [
+            {
+                "sourceId": start_source,
+                "provider": "webull",
+                "sourceKind": "statement",
+                "parserVersion": "webull-statement-v1",
+                "pageCount": 3,
+                "statementStart": "2025-12-01",
+                "statementEnd": "2025-12-31",
+                "accountFingerprint": FINGERPRINT,
+            },
+            {
+                "sourceId": end_source,
+                "provider": "webull",
+                "sourceKind": "statement",
+                "parserVersion": "webull-statement-v1",
+                "pageCount": 4,
+                "statementStart": "2026-07-01",
+                "statementEnd": "2026-07-31",
+                "accountFingerprint": FINGERPRINT,
+            },
+            {
+                "sourceId": ledger_source,
+                "provider": "webull",
+                "sourceKind": "activity_ledger",
+                "parserVersion": "webull-transfer-history-v1",
+                "pageCount": 0,
+                "statementStart": "2025-12-31",
+                "statementEnd": "2026-07-31",
+                "accountFingerprint": FINGERPRINT,
+            },
+        ],
+        "anchors": [
+            {
+                "accountHandle": account_handle,
+                "sourceId": start_source,
+                "date": "2025-12-31",
+                "currency": "USD",
+                "netLiquidationValue": "100.00",
+                "cashBalance": "25.00",
+                "marginDebitBalance": None,
+                "signedCashBalance": "25.00",
+                "quality": "statement_reconciled",
+            },
+            {
+                "accountHandle": account_handle,
+                "sourceId": end_source,
+                "date": "2026-07-31",
+                "currency": "USD",
+                "netLiquidationValue": "130.00",
+                "cashBalance": "15.00",
+                "marginDebitBalance": None,
+                "signedCashBalance": "15.00",
+                "quality": "statement_reconciled",
+            },
+        ],
+        "externalFlows": [
+            {
+                "accountHandle": account_handle,
+                "sourceId": ledger_source,
+                "sequence": 1,
+                "date": "2026-05-13",
+                "occurredAt": "2026-05-13T16:30:09Z",
+                "kind": "withdrawal",
+                "amount": "-10.00",
+                "currency": "USD",
+                "valuationStatus": "reported",
+                "evidence": "broker_activity_ledger",
+            }
+        ],
+        "validation": {
+            "importReady": True,
+            "publicationReady": True,
+            "errorCount": 0,
+            "warningCount": 0,
+            "duplicateSourceCount": 0,
+            "coverage": {
+                "start": "2025-12-01",
+                "end": "2026-07-31",
+                "statementCount": 2,
+                "contiguousMonthlyCoverage": False,
+                "externalFlowCoverageComplete": True,
+            },
+            "issues": [],
+            "reconciliation": {
+                "status": "passed",
+                "privateInputSourceId": ledger_source,
+                "matchedAnchors": 2,
                 "mismatchedAnchors": 0,
                 "matchedFlows": 1,
                 "mismatchedFlows": 0,
@@ -590,3 +699,59 @@ def test_plaid_flow_precedence_and_unvalued_flow_publication_block():
         start=datetime(2026, 2, 1, 17, tzinfo=UTC),
         end=datetime(2026, 2, 28, 21, tzinfo=UTC),
     )
+
+
+def test_webull_statement_and_activity_ledger_reconcile_sparse_history():
+    key = Fernet.generate_key()
+    repository = MemoryRepository("123456789")
+    account = BrokerageAccount(
+        account_id="webull:synthetic-private-account",
+        provider=BrokerProvider.WEBULL,
+        account_type="MARGIN",
+        status="ACTIVE",
+        currency="USD",
+    )
+    repository.connect_accounts([account])
+    account_handle = repository.account_handles[account.account_id]
+
+    receipt = import_statement_bundle(
+        encrypted_payload=_encrypted(_webull_bundle(account_handle), key),
+        m1_statement_output_key=key,
+        owner_github_id="123456789",
+        atomic_commit=repository.commit_statement_import,
+    )
+
+    assert receipt.publication_eligible is True
+    valuations, flows = repository.get_performance_inputs(account.account_id)
+    assert len(valuations) == 2
+    assert len(flows) == 1
+    assert flows[0].occurred_at == datetime(2026, 5, 13, 16, 30, 9, tzinfo=UTC)
+    assert repository.cash_activity_coverage_spans(
+        account.account_id,
+        start=datetime(2025, 12, 31, 21, tzinfo=UTC),
+        end=datetime(2026, 7, 31, 20, tzinfo=UTC),
+    )
+    performance = calculate_performance(
+        account.account_id,
+        valuations,
+        flows,
+        statement_reconciled=True,
+    )
+    assert performance.periods
+    assert performance.quality == "statement_reconciled"
+
+
+def test_webull_sparse_history_requires_explicit_complete_external_flow_coverage():
+    bundle = _webull_bundle("webull_synthetic_private_handle")
+    validation = bundle["validation"]
+    assert isinstance(validation, dict)
+    coverage = validation["coverage"]
+    assert isinstance(coverage, dict)
+    coverage["externalFlowCoverageComplete"] = False
+    key = Fernet.generate_key()
+
+    prepared = prepare_statement_import(
+        _encrypted(bundle, key),
+        key,
+    )
+    assert statement_publication_eligible(prepared.bundle) is False

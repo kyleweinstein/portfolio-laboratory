@@ -488,10 +488,27 @@ def create_app(
         valuations, external_flows = runtime_repository.get_performance_inputs(
             account_id
         )
+        coverage_spans_performance = bool(valuations) and (
+            runtime_repository.cash_activity_coverage_spans(
+                account_id,
+                start=valuations[0].at,
+                end=valuations[-1].at,
+            )
+        )
         performance = (
-            calculate_performance(account_id, valuations, external_flows)
-            if valuations and cash_activities_complete is not False
+            calculate_performance(
+                account_id,
+                valuations,
+                external_flows,
+                statement_reconciled=any(
+                    point.source == "statement_anchor" for point in valuations
+                ),
+            )
+            if coverage_spans_performance
             else None
+        )
+        effective_cash_activities_complete = (
+            True if coverage_spans_performance else cash_activities_complete
         )
         activities = tuple(
             runtime_repository.get_recent_activities(account_id, limit=100)
@@ -501,7 +518,7 @@ def create_app(
             portfolio,
             len(performance.periods) if performance else 0,
             capabilities,
-            cash_activities_complete,
+            effective_cash_activities_complete,
         )
         return ServiceStatus(
             connected=True,
@@ -1019,7 +1036,14 @@ def create_app(
                 "before publication."
             )
         performance = (
-            calculate_performance(config.account_id, valuations, external_flows)
+            calculate_performance(
+                config.account_id,
+                valuations,
+                external_flows,
+                statement_reconciled=any(
+                    point.source == "statement_anchor" for point in valuations
+                ),
+            )
             if cash_coverage_spans_performance
             else None
         )

@@ -133,8 +133,14 @@ class Settings:
                 12,
                 _integer("PUBLISHED_ANALYTICS_CONCURRENCY", 6, 1),
             ),
-            m1_statement_import_enabled=_boolean("M1_STATEMENT_IMPORT_ENABLED", False),
-            m1_statement_output_key=os.getenv("M1_STATEMENT_OUTPUT_KEY", "").strip(),
+            m1_statement_import_enabled=_boolean(
+                "BROKER_STATEMENT_IMPORT_ENABLED",
+                _boolean("M1_STATEMENT_IMPORT_ENABLED", False),
+            ),
+            m1_statement_output_key=(
+                os.getenv("BROKER_STATEMENT_OUTPUT_KEY", "").strip()
+                or os.getenv("M1_STATEMENT_OUTPUT_KEY", "").strip()
+            ),
         )
 
     @property

@@ -116,3 +116,23 @@ def test_statement_import_migration_is_owner_scoped_atomic_and_private() -> None
     assert "REVOKE ALL ON statement_import_batches FROM PUBLIC" in sql
     assert "raw_pdf" not in sql.lower()
     assert "extracted_text" not in sql.lower()
+
+
+def test_webull_statement_reconciliation_migration_supports_sparse_anchors() -> None:
+    sql = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "0010_webull_statement_reconciliation.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "provider IN ('m1', 'apex', 'webull')" in sql
+    assert "source_kind" in sql
+    assert "source_kind IN ('statement', 'activity_ledger')" in sql
+    assert "source_kind = 'statement' AND page_count > 0" in sql
+    assert "source_kind = 'activity_ledger' AND page_count = 0" in sql
+    assert "external_flow_coverage_complete BOOLEAN" in sql
+    assert "flow_at TIMESTAMPTZ" in sql
+    assert "broker_activity_ledger" in sql
+    assert "owner_github_id" in sql
+    assert "raw_pdf" not in sql.lower()
+    assert "extracted_text" not in sql.lower()
