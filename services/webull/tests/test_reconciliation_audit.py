@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
 
 from webull_service.reconciliation_audit import _safe_row
 
@@ -13,6 +14,8 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
             "account_type": "MARGIN",
             "status": "ACTIVE",
             "currency": "USD",
+            "account_handle": "private-account-handle",
+            "connection_provider": "webull",
             "connection_status": "READY",
             "canonical_account_handle": True,
             "account_owner_github_id": "expected-owner",
@@ -26,14 +29,17 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
             "ending_equity": "private-value",
         },
         "expected-owner",
+        sha256(b"private-account-handle").hexdigest(),
     )
 
     assert projected == {
         "accountType": "MARGIN",
         "status": "ACTIVE",
         "currency": "USD",
+        "connectionProvider": "webull",
         "connectionStatus": "READY",
         "canonicalAccountHandle": True,
+        "expectedAccountHandle": True,
         "selected": True,
         "accountOwnerState": "matches",
         "connectionOwnerState": "unowned",
@@ -47,6 +53,7 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
     assert "private-account-id" not in rendered
     assert "private-internal-id" not in rendered
     assert "private-value" not in rendered
+    assert "private-account-handle" not in rendered
     assert "expected-owner" not in rendered
 
 
