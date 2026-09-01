@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from datetime import date
+from hashlib import sha256
 
 import psycopg
 from psycopg.rows import dict_row
@@ -16,6 +17,7 @@ class ReconciliationAuditError(RuntimeError):
 def reconciliation_audit(
     database_url: str,
     expected_owner_github_id: str,
+    expected_account_handle_sha256: str = "",
 ) -> tuple[dict[str, object], ...]:
     if not database_url:
         raise ReconciliationAuditError("configuration")
@@ -29,6 +31,8 @@ def reconciliation_audit(
                 SELECT account.account_type,
                        account.status,
                        account.currency,
+                       account.account_handle,
+                       connection.provider AS connection_provider,
                        connection.status AS connection_status,
                        account.account_handle = account.internal_account_id::TEXT
                            AS canonical_account_handle,
@@ -59,7 +63,8 @@ def reconciliation_audit(
                 GROUP BY account.account_id, account.account_type,
                          account.status, account.currency,
                          account.account_handle, account.internal_account_id,
-                         account.owner_github_id, connection.status,
+                         account.owner_github_id, connection.provider,
+                         connection.status,
                          connection.owner_github_id, state.selected_account_id
                 ORDER BY selected DESC, account.account_type
                 """
@@ -67,7 +72,10 @@ def reconciliation_audit(
             rows = cursor.fetchall()
     except Exception:  # noqa: BLE001 - never expose database or account details.
         raise ReconciliationAuditError("database") from None
-    return tuple(_safe_row(row, expected_owner_github_id) for row in rows)
+    return tuple(
+        _safe_row(row, expected_owner_github_id, expected_account_handle_sha256)
+        for row in rows
+    )
 
 
 def _owner_state(value: object, expected_owner_github_id: str) -> str:
@@ -81,6 +89,7 @@ def _owner_state(value: object, expected_owner_github_id: str) -> str:
 def _safe_row(
     row: dict[str, object],
     expected_owner_github_id: str = "",
+    expected_account_handle_sha256: str = "",
 ) -> dict[str, object]:
     def safe_date(value: object) -> str | None:
         return value.isoformat() if isinstance(value, date) else None
@@ -89,8 +98,12 @@ def _safe_row(
         "accountType": str(row.get("account_type") or "unknown")[:40],
         "status": str(row.get("status") or "unknown")[:40],
         "currency": str(row.get("currency") or "unknown")[:8],
+        "connectionProvider": str(row.get("connection_provider") or "missing")[:40],
         "connectionStatus": str(row.get("connection_status") or "missing")[:40],
         "canonicalAccountHandle": row.get("canonical_account_handle") is True,
+        "expectedAccountHandle": bool(expected_account_handle_sha256)
+        and sha256(str(row.get("account_handle") or "").encode()).hexdigest()
+        == expected_account_handle_sha256,
         "selected": row.get("selected") is True,
         "accountOwnerState": _owner_state(
             row.get("account_owner_github_id"), expected_owner_github_id
@@ -111,6 +124,7 @@ def main() -> int:
         accounts = reconciliation_audit(
             os.getenv("DATABASE_URL", "").strip(),
             os.getenv("PORTFOLIO_OWNER_GITHUB_ID", "").strip(),
+            os.getenv("BROKER_STATEMENT_AUDIT_HANDLE_SHA256", "").strip(),
         )
     except ReconciliationAuditError as exc:
         print(f"Private reconciliation audit failed ({exc}).", file=sys.stderr)
