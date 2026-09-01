@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
@@ -755,3 +756,23 @@ def test_webull_sparse_history_requires_explicit_complete_external_flow_coverage
         key,
     )
     assert statement_publication_eligible(prepared.bundle) is False
+
+
+def test_postgres_import_can_claim_one_unowned_legacy_webull_account() -> None:
+    source = (Path(__file__).parents[1] / "webull_service" / "repository.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "account.owner_github_id = %s" in source
+    assert "connection.owner_github_id = %s" in source
+    assert "%s = 'webull'" in source
+    assert "UPPER(account.account_type) = 'MARGIN'" in source
+    assert "state.selected_internal_account_id = account.internal_account_id" in source
+    assert "state.selected_internal_account_id IS NOT NULL" in source
+    assert "account.owner_github_id IS NULL" in source
+    assert "connection.owner_github_id IS NULL" in source
+    assert "FOR UPDATE OF account, connection" in source
+    assert "UPDATE broker_connections" in source
+    assert "UPDATE brokerage_accounts" in source
+    assert "WHERE account_id = %s AND owner_github_id IS NULL" in source
+    assert 'target_provider == "webull"' in source
