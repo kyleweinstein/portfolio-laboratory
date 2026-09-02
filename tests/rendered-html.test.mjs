@@ -54,8 +54,13 @@ test("client analysis uses explicit snapshots, worker analytics, bounded directi
   assert.doesNotMatch(source, /CumulativeChart|Growth of one dollar|Multi-asset performance overlay/);
   assert.match(source, /Lowest-correlation opportunities/);
   assert.match(source, /Suggested rebalance buckets/);
-  assert.match(source, /Style \/ sector \/ factor radar/);
-  assert.match(source, /<RadarPlot title="Factor"/);
+  assert.match(source, /Style \/ sector \/ factor classifications/);
+  assert.doesNotMatch(source, /Style \/ sector \/ factor radar/);
+  assert.doesNotMatch(source, /RadarPlot|radar-grid|radar-panel/);
+  assert.match(source, /cash is included as a possible holding/i);
+  assert.match(source, /rises only to the lowest feasible level/i);
+  assert.match(source, /MIN_OPTIMIZER_HOLDINGS/);
+  assert.doesNotMatch(styles, /\.radar-/);
   assert.match(analytics, /STYLE_PROXIES/);
   assert.match(analytics, /SECTOR_PROXIES/);
   assert.match(analytics, /FACTOR_PROXIES/);
