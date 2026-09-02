@@ -590,7 +590,7 @@ class PostgresRepository:
             )
             cursor.execute(
                 "UPDATE brokerage_accounts SET last_synced_at = %s, updated_at = %s WHERE account_id = %s",
-                (balance.as_of, completed_at, account.account_id),
+                (completed_at, completed_at, account.account_id),
             )
         return SyncResult(
             sync_run_id=sync_run_id,
@@ -2676,8 +2676,8 @@ class MemoryRepository:
             if not effective_cash_coverage
             else None
         )
-        self.account_last_synced_at[account.account_id] = balance.as_of
         completed_at = utc_now()
+        self.account_last_synced_at[account.account_id] = completed_at
         sync_run_id = str(uuid4())
         self.sync_attempts.append(
             (

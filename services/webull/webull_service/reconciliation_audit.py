@@ -127,10 +127,142 @@ def reconciliation_audit(
                 """
             )
             rows = cursor.fetchall()
+            cursor.execute(
+                """
+                WITH selected AS (
+                    SELECT account.account_id, account.internal_account_id
+                    FROM brokerage_accounts account
+                    JOIN service_connection_state state
+                      ON state.provider = 'webull'
+                     AND state.selected_account_id = account.account_id
+                    WHERE account.provider = 'webull'
+                ), ordered_anchors AS (
+                    SELECT anchor.account_id, anchor.statement_date,
+                           anchor.ending_equity,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY anchor.account_id
+                               ORDER BY anchor.statement_date
+                           ) AS first_ordinal,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY anchor.account_id
+                               ORDER BY anchor.statement_date DESC
+                           ) AS last_ordinal
+                    FROM statement_anchors anchor
+                    JOIN selected ON selected.account_id = anchor.account_id
+                ), bounds AS (
+                    SELECT account_id,
+                           MAX(ending_equity) FILTER (
+                               WHERE first_ordinal = 1
+                           ) AS beginning_value,
+                           MAX(ending_equity) FILTER (
+                               WHERE last_ordinal = 1
+                           ) AS ending_value,
+                           MIN(statement_date) AS period_start,
+                           MAX(statement_date) AS period_end
+                    FROM ordered_anchors
+                    GROUP BY account_id
+                ), flows AS (
+                    SELECT selected.account_id, flow.kind, flow.amount,
+                           flow.flow_date,
+                           COALESCE(
+                               flow.flow_at,
+                               (flow.flow_date + TIME '16:00') AT TIME ZONE
+                                   'America/New_York'
+                           ) AS occurred_at
+                    FROM statement_external_flows flow
+                    JOIN selected
+                      ON selected.internal_account_id = flow.internal_account_id
+                    WHERE flow.valuation_status = 'reported'
+                      AND flow.amount IS NOT NULL
+                ), period_flows AS (
+                    SELECT flow.*, bounds.period_start, bounds.period_end,
+                           EXTRACT(
+                               EPOCH FROM (bounds.period_end - flow.occurred_at)
+                           ) / NULLIF(
+                               EXTRACT(
+                                   EPOCH FROM (
+                                       bounds.period_end - bounds.period_start
+                                   )
+                               ),
+                               0
+                           ) AS remaining_weight
+                    FROM flows flow
+                    JOIN bounds ON bounds.account_id = flow.account_id
+                    WHERE flow.occurred_at > bounds.period_start
+                      AND flow.occurred_at <= bounds.period_end
+                ), aggregates AS (
+                    SELECT bounds.account_id, bounds.beginning_value,
+                           bounds.ending_value, bounds.period_start,
+                           bounds.period_end,
+                           COUNT(period_flows.amount) AS flow_count,
+                           COALESCE(SUM(period_flows.amount), 0) AS net_flow,
+                           COALESCE(
+                               SUM(
+                                   period_flows.amount *
+                                   period_flows.remaining_weight
+                               ),
+                               0
+                           ) AS weighted_flow,
+                           COUNT(*) FILTER (
+                               WHERE (
+                                   period_flows.kind IN (
+                                       'deposit', 'security_transfer_in'
+                                   ) AND period_flows.amount < 0
+                               ) OR (
+                                   period_flows.kind IN (
+                                       'withdrawal', 'security_transfer_out'
+                                   ) AND period_flows.amount > 0
+                               )
+                           ) AS sign_mismatches,
+                           COUNT(*) FILTER (
+                               WHERE period_flows.kind = 'deposit'
+                           ) AS deposits,
+                           COUNT(*) FILTER (
+                               WHERE period_flows.kind = 'withdrawal'
+                           ) AS withdrawals,
+                           COUNT(*) FILTER (
+                               WHERE period_flows.kind = 'security_transfer_in'
+                           ) AS security_transfers_in,
+                           COUNT(*) FILTER (
+                               WHERE period_flows.kind = 'security_transfer_out'
+                           ) AS security_transfers_out,
+                           MIN(period_flows.flow_date) AS flow_start,
+                           MAX(period_flows.flow_date) AS flow_end
+                    FROM bounds
+                    LEFT JOIN period_flows
+                      ON period_flows.account_id = bounds.account_id
+                    GROUP BY bounds.account_id, bounds.beginning_value,
+                             bounds.ending_value, bounds.period_start,
+                             bounds.period_end
+                )
+                SELECT account_id, flow_count, sign_mismatches, deposits,
+                       withdrawals, security_transfers_in,
+                       security_transfers_out, flow_start, flow_end,
+                       CASE WHEN beginning_value > 0 THEN
+                           100 * (ending_value / beginning_value - 1)
+                       END AS simple_return_percent,
+                       CASE WHEN beginning_value > 0 THEN
+                           100 * net_flow / beginning_value
+                       END AS net_flow_percent_of_beginning,
+                       CASE WHEN beginning_value + weighted_flow <> 0 THEN
+                           100 * (
+                               ending_value - beginning_value - net_flow
+                           ) / (beginning_value + weighted_flow)
+                       END AS modified_dietz_percent
+                FROM aggregates
+                """
+            )
+            performance_diagnostics = {
+                row["account_id"]: row for row in cursor.fetchall()
+            }
     except Exception:  # noqa: BLE001 - never expose database or account details.
         raise ReconciliationAuditError("database") from None
     return tuple(
-        _safe_row(row, expected_owner_github_id, expected_account_handle_sha256)
+        _safe_row(
+            {**row, **performance_diagnostics.get(row["account_id"], {})},
+            expected_owner_github_id,
+            expected_account_handle_sha256,
+        )
         for row in rows
     )
 
@@ -152,6 +284,12 @@ def _safe_row(
         if isinstance(value, datetime):
             return value.date().isoformat()
         return value.isoformat() if isinstance(value, date) else None
+
+    def safe_percent(value: object) -> float | None:
+        try:
+            return round(float(value), 4) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     return {
         "accountType": str(row.get("account_type") or "unknown")[:40],
@@ -186,6 +324,19 @@ def _safe_row(
         "providerCoverageEnd": safe_date(row.get("cash_activity_coverage_end")),
         "providerGapStart": safe_date(row.get("cash_activity_gap_start")),
         "providerGapEnd": safe_date(row.get("cash_activity_gap_end")),
+        "flowCount": int(row.get("flow_count") or 0),
+        "flowSignMismatches": int(row.get("sign_mismatches") or 0),
+        "deposits": int(row.get("deposits") or 0),
+        "withdrawals": int(row.get("withdrawals") or 0),
+        "securityTransfersIn": int(row.get("security_transfers_in") or 0),
+        "securityTransfersOut": int(row.get("security_transfers_out") or 0),
+        "flowStart": safe_date(row.get("flow_start")),
+        "flowEnd": safe_date(row.get("flow_end")),
+        "simpleReturnPercent": safe_percent(row.get("simple_return_percent")),
+        "netFlowPercentOfBeginning": safe_percent(
+            row.get("net_flow_percent_of_beginning")
+        ),
+        "modifiedDietzPercent": safe_percent(row.get("modified_dietz_percent")),
     }
 
 

@@ -119,12 +119,14 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
         region: str = "us",
         endpoint: str = "api.webull.com",
         token_dir: str | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._app_key = app_key
         self._app_secret = app_secret
         self._region = region
         self._endpoint = endpoint
         self._token_dir = token_dir
+        self._clock = clock
         self._trade_client: Any | None = None
 
     @property
@@ -265,11 +267,12 @@ class OfficialWebullAdapter(ReadOnlyWebullAdapter):
                 default=_first(primary_currency, "market_value"),
             )
         )
+        observed_at = ensure_utc(self._clock())
         return BalanceSnapshot(
             account_id=account_id,
             as_of=_datetime(
                 _first(row, "as_of", "update_time", "timestamp"),
-                datetime(1970, 1, 1, tzinfo=UTC),
+                observed_at,
             ),
             currency=currency,
             equity=equity,
