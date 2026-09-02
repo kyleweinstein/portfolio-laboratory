@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import UTC, datetime
 
 import pytest
 
@@ -16,6 +17,30 @@ class _Response:
 
     def json(self):
         return self.payload
+
+
+def test_balance_without_broker_timestamp_uses_observation_time() -> None:
+    observed_at = datetime(2026, 9, 1, 15, 30, tzinfo=UTC)
+
+    class _Accounts:
+        def get_account_balance(self, _account_id):
+            return _Response(
+                {
+                    "total_asset_currency": "USD",
+                    "total_net_liquidation_value": "100",
+                    "total_cash_balance": "10",
+                    "total_market_value": "90",
+                }
+            )
+
+    adapter = OfficialWebullAdapter(
+        app_key="configured",
+        app_secret="configured",
+        clock=lambda: observed_at,
+    )
+    adapter._trade_client = type("Client", (), {"account_v2": _Accounts()})()
+
+    assert adapter.get_balance("account-1").as_of == observed_at
 
 
 def test_optional_history_failure_does_not_disable_current_holdings(

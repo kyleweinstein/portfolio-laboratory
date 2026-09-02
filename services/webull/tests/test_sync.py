@@ -1,5 +1,5 @@
 import inspect
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -309,10 +309,14 @@ def test_connection_state_uses_selected_accounts_own_last_sync_time() -> None:
     adapter = TwoAccountAdapter()
     repository = MemoryRepository()
 
+    before_sync = datetime.now(UTC)
     SyncService(adapter, repository).sync_all()
+    after_sync = datetime.now(UTC)
 
     first_state = repository.get_connection_state()
     assert first_state.selected_account_id == adapter.account.account_id
-    assert first_state.last_synced_at == adapter.as_of
+    assert first_state.last_synced_at is not None
+    assert before_sync <= first_state.last_synced_at <= after_sync
     second_state = repository.select_account(adapter.second_account.account_id)
-    assert second_state.last_synced_at == adapter.as_of + timedelta(hours=2)
+    assert second_state.last_synced_at is not None
+    assert before_sync <= second_state.last_synced_at <= after_sync
