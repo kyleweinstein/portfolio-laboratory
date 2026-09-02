@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from hashlib import sha256
+from pathlib import Path
 
 from webull_service.reconciliation_audit import _safe_row
 
@@ -99,6 +100,15 @@ def test_audit_projection_contains_no_account_identifiers_or_values() -> None:
     assert "private-value" not in rendered
     assert "private-account-handle" not in rendered
     assert "expected-owner" not in rendered
+
+
+def test_audit_query_keeps_account_key_private_but_available_for_diagnostics() -> None:
+    source = (
+        Path(__file__).parents[1] / "webull_service" / "reconciliation_audit.py"
+    ).read_text(encoding="utf-8")
+
+    assert "SELECT account.account_id, account.account_type" in source
+    assert 'performance_diagnostics.get(row["account_id"], {})' in source
 
 
 def test_audit_owner_state_fails_closed_without_exposing_ids() -> None:

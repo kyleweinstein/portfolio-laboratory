@@ -28,7 +28,7 @@ def reconciliation_audit(
         ):
             cursor.execute(
                 """
-                SELECT account.account_type,
+                SELECT account.account_id, account.account_type,
                        account.status,
                        account.currency,
                        account.account_handle,
