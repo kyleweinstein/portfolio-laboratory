@@ -412,18 +412,14 @@ def statement_source_content_hashes(
 def statement_publication_eligible(bundle: StatementBackfillBundleV2) -> bool:
     """Apply service-side coverage gates in addition to producer validation."""
 
-    webull_reconciled = (
+    if (
         bundle.schema_version == WEBULL_SCHEMA_VERSION
-        and all(source.provider == "webull" for source in bundle.sources)
-        and any(source.source_kind == "activity_ledger" for source in bundle.sources)
-        and bundle.validation.coverage.external_flow_coverage_complete
-        and len(bundle.anchors) >= 2
-    )
+        and not bundle.validation.coverage.external_flow_coverage_complete
+    ):
+        return False
     return bool(
         bundle.validation.publication_ready
-        and (
-            bundle.validation.coverage.contiguous_monthly_coverage or webull_reconciled
-        )
+        and bundle.validation.coverage.contiguous_monthly_coverage
         and all(
             flow.valuation_status == "reported" and flow.amount is not None
             for flow in bundle.external_flows

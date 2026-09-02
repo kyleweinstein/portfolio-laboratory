@@ -21,7 +21,6 @@ from webull_service.models import (
     CashActivity,
     PortfolioState,
 )
-from webull_service.performance import calculate_performance
 from webull_service.repository import MemoryRepository
 from webull_service.statement_import import (
     SCHEMA_VERSION,
@@ -708,7 +707,7 @@ def test_plaid_flow_precedence_and_unvalued_flow_publication_block():
     )
 
 
-def test_webull_statement_and_activity_ledger_reconcile_sparse_history():
+def test_webull_sparse_statement_history_is_not_treated_as_reconciled():
     key = Fernet.generate_key()
     repository = MemoryRepository("123456789")
     account = BrokerageAccount(
@@ -743,25 +742,17 @@ def test_webull_statement_and_activity_ledger_reconcile_sparse_history():
         atomic_commit=repository.commit_statement_import,
     )
 
-    assert receipt.publication_eligible is True
+    assert receipt.publication_eligible is False
     valuations, flows = repository.get_performance_inputs(account.account_id)
     assert len(valuations) == 2
     assert all(point.at > datetime(1970, 1, 1, tzinfo=UTC) for point in valuations)
     assert len(flows) == 1
     assert flows[0].occurred_at == datetime(2026, 5, 13, 16, 30, 9, tzinfo=UTC)
-    assert repository.cash_activity_coverage_spans(
+    assert not repository.cash_activity_coverage_spans(
         account.account_id,
         start=datetime(2025, 12, 31, 21, tzinfo=UTC),
         end=datetime(2026, 7, 31, 20, tzinfo=UTC),
     )
-    performance = calculate_performance(
-        account.account_id,
-        valuations,
-        flows,
-        statement_reconciled=True,
-    )
-    assert performance.periods
-    assert performance.quality == "statement_reconciled"
 
 
 def test_webull_sparse_history_requires_explicit_complete_external_flow_coverage():
