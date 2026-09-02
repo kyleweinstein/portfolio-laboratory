@@ -16,6 +16,12 @@ export type StyleName = typeof STYLE_OPTIONS[number];
 export type SectorName = typeof SECTOR_OPTIONS[number];
 export type FactorName = typeof FACTOR_OPTIONS[number];
 export type HoldingInput = { symbol: string; weight: number };
+export const OPTIMIZER_MAX_WEIGHT = .15;
+export const MIN_OPTIMIZER_HOLDINGS = 2;
+
+export function optimizerMaxWeightForHoldingCount(count: number) {
+  return Math.max(OPTIMIZER_MAX_WEIGHT, 1 / Math.max(count + 1, 1));
+}
 export type RawSeries = { dates: string[]; prices: number[] };
 export type PackedSeries = { symbol: string; days: Int32Array; prices: Float64Array };
 export type Stat = { annualReturn: number; volatility: number; sharpe: number; maxDrawdown: number; var95: number; cvar95: number; beta?: number };
@@ -449,9 +455,11 @@ export function analyzePortfolio(input: AnalysisInput, series: Map<string, Packe
   };
 }
 
-export function projectCappedSimplex(values: number[], cap = .6) {
+export function projectCappedSimplex(values: number[], cap = OPTIMIZER_MAX_WEIGHT) {
   if (!values.length) return [];
-  if (values.length * cap < 1) return values.map(() => 1 / values.length);
+  if (values.length * cap < 1 - 1e-12) {
+    throw new Error(`A ${(cap * 100).toFixed(0)}% holding cap requires at least ${Math.ceil(1 / cap)} holdings.`);
+  }
   let low = Math.min(...values.map(value => value - cap));
   let high = Math.max(...values);
   for (let iteration = 0; iteration < 70; iteration++) {
@@ -466,11 +474,20 @@ export function projectCappedSimplex(values: number[], cap = .6) {
 
 export function optimizePortfolio(result: AnalysisResult, objective: "minvol" | "maxsharpe", riskFreeRate: number) {
   const count = result.assetReturns.length;
-  if (count < 2) throw new Error("Optimization requires at least two holdings.");
-  const means = result.assetReturns.map(returns => moments(returns).mean);
-  const covarianceMatrix = result.assetReturns.map((left, row) => result.assetReturns.map((right, column) =>
-    row === column ? moments(left).variance : covariance(left, right)));
-  let weights = projectCappedSimplex(result.targetWeights, .6);
+  if (count < MIN_OPTIMIZER_HOLDINGS) throw new Error("Optimization requires at least two holdings.");
+  const maxWeight = optimizerMaxWeightForHoldingCount(count);
+  const means = [
+    ...result.assetReturns.map(returns => moments(returns).mean),
+    Math.log1p(riskFreeRate) / 252,
+  ];
+  const covarianceMatrix = Array.from({ length: count + 1 }, (_, row) =>
+    Array.from({ length: count + 1 }, (_, column) => {
+      if (row === count || column === count) return 0;
+      return row === column
+        ? moments(result.assetReturns[row]).variance
+        : covariance(result.assetReturns[row], result.assetReturns[column]);
+    }));
+  let weights = projectCappedSimplex([...result.targetWeights, 0], maxWeight);
   const evaluate = (candidate: number[]) => {
     const meanDaily = candidate.reduce((sum, weight, index) => sum + weight * means[index], 0);
     const sigmaWeights = covarianceMatrix.map(row => row.reduce((sum, value, index) => sum + value * candidate[index], 0));
@@ -496,7 +513,7 @@ export function optimizePortfolio(result: AnalysisResult, objective: "minvol" | 
     let candidate = weights;
     let accepted = false;
     for (let lineSearch = 0; lineSearch < 18; lineSearch++) {
-      candidate = projectCappedSimplex(weights.map((weight, index) => weight + step * direction[index]), .6);
+      candidate = projectCappedSimplex(weights.map((weight, index) => weight + step * direction[index]), maxWeight);
       if (evaluate(candidate).score >= current.score - 1e-12) {
         accepted = true;
         break;

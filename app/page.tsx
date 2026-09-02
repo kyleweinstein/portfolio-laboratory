@@ -8,13 +8,11 @@ import WebullDashboard from "./webull-dashboard";
 import type { WebullSource } from "./webull-client";
 import {
   ALL_PROXY_SYMBOLS,
-  FACTOR_OPTIONS,
-  SECTOR_OPTIONS,
-  STYLE_OPTIONS,
+  MIN_OPTIMIZER_HOLDINGS,
+  optimizerMaxWeightForHoldingCount,
   dayToLabel,
   packSeries,
   type AnalysisResult,
-  type CategoryView,
   type HoldingInput,
   type PairInsight,
   type RawSeries,
@@ -23,7 +21,6 @@ import type { AnalyticsWorkerRequest, AnalyticsWorkerResponse } from "./analytic
 
 type Holding = HoldingInput;
 type ChartSeries = { name: string; returns: Float64Array; color: string };
-type RadarDatum = { label: string; value: number };
 type Progress = { phase: "idle" | "fetching" | "analyzing" | "optimizing" | "ready" | "error"; message: string; current?: number; total?: number };
 type WorkerPending = { resolve: (message: AnalyticsWorkerResponse) => void; reject: (error: Error) => void };
 type WorkerCommand = AnalyticsWorkerRequest extends infer Request
@@ -63,18 +60,6 @@ function cachedSeries(years: number, symbol: string) {
 const pct = (value: number, digits = 1) => Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : "—";
 const pp = (value: number, digits = 1) => Number.isFinite(value) ? `${(value * 100).toFixed(digits)} pp` : "—";
 const num = (value: number, digits = 2) => Number.isFinite(value) ? value.toFixed(digits) : "—";
-
-function radarDataFromView(view: CategoryView, options: readonly string[]): RadarDatum[] {
-  const ranked = view.rows.map(row => ({ label: row.name, value: row.exposure })).sort((a, b) => b.value - a.value);
-  const visible = ranked.length > 6
-    ? [...ranked.slice(0, 5), { label: "Other", value: ranked.slice(5).reduce((sum, item) => sum + item.value, 0) }]
-    : ranked;
-  for (const option of options) {
-    if (visible.length >= 3) break;
-    if (!visible.some(item => item.label === option)) visible.push({ label: option, value: 0 });
-  }
-  return visible;
-}
 
 function classifyCorrelation(correlation: number) {
   if (correlation < 0) return "Anticorrelated";
@@ -435,10 +420,11 @@ function App() {
     </section>
 
     <section className="card optimizer-card">
-      <div><span className="eyebrow">Portfolio design</span><h2>Constraint-aware optimizer</h2><p className="muted">Long-only; each holding capped at 60%. Optimization uses the latest analyzed snapshot and runs away from the interface.</p></div>
-      <div className="optimizer-actions"><div className="action-row"><button className="secondary" disabled={!analysis || dirty || busy || analysis.symbols.length < 2} onClick={() => optimize("minvol")}>{pendingOptimization === "minvol" ? "Optimizing…" : "Minimum volatility"}</button><button className="secondary" disabled={!analysis || dirty || busy || analysis.symbols.length < 2} onClick={() => optimize("maxsharpe")}>{pendingOptimization === "maxsharpe" ? "Optimizing…" : "Maximum Sharpe"}</button></div>
+      <div><span className="eyebrow">Portfolio design</span><h2>Constraint-aware optimizer</h2><p className="muted">Long-only; cash is included as a possible holding. The cap is 15% when the portfolio plus cash has enough positions; otherwise it rises only to the lowest feasible level.</p></div>
+      <div className="optimizer-actions"><div className="action-row"><button className="secondary" disabled={!analysis || dirty || busy || analysis.symbols.length < MIN_OPTIMIZER_HOLDINGS} onClick={() => optimize("minvol")}>{pendingOptimization === "minvol" ? "Optimizing…" : "Minimum volatility"}</button><button className="secondary" disabled={!analysis || dirty || busy || analysis.symbols.length < MIN_OPTIMIZER_HOLDINGS} onClick={() => optimize("maxsharpe")}>{pendingOptimization === "maxsharpe" ? "Optimizing…" : "Maximum Sharpe"}</button></div>
+        {analysis && analysis.symbols.length < 6 && <p className="note">With {analysis.symbols.length} analyzed securities plus cash, the effective cap is {pct(optimizerMaxWeightForHoldingCount(analysis.symbols.length))} per holding.</p>}
         {dirty && analysis && <p className="note">Analyze the draft before optimizing; the current result belongs to the prior snapshot.</p>}
-        {optimized && analysis && <div className="recommend"><b>Suggested target allocation</b><div>{analysis.symbols.map((symbol, index) => <span key={symbol}>{symbol} <strong>{pct(optimized[index])}</strong></span>)}</div><button className="link" onClick={applyOptimized}>Apply as draft weights →</button></div>}
+        {optimized && analysis && <div className="recommend"><b>Suggested target allocation</b><div>{analysis.symbols.map((symbol, index) => <span key={symbol}>{symbol} <strong>{pct(optimized[index])}</strong></span>)}<span>Cash <strong>{pct(optimized[analysis.symbols.length])}</strong></span></div>{optimized[analysis.symbols.length] <= 1e-6 ? <button className="link" onClick={applyOptimized}>Apply as draft weights →</button> : <small>Cash remains separate from the market-data draft and cannot be applied as a ticker weight.</small>}</div>}
       </div>
       <p className="note">Optimization and rebalancing are scenario tools, not recommendations. Results are sensitive to the window, expected returns, constraints, taxes, and trading costs.</p>
     </section>
@@ -452,8 +438,8 @@ function App() {
       <section className="metric-grid"><Metric label="Annualized return" value={pct(analysis.portfolio.annualReturn)}/><Metric label="Annualized volatility" value={pct(analysis.portfolio.volatility)}/><Metric label="Sharpe ratio" value={num(analysis.portfolio.sharpe)}/><Metric label="Maximum drawdown" value={pct(analysis.portfolio.maxDrawdown)}/><Metric label="Historical VaR (95%)" value={pct(analysis.portfolio.var95)}/><Metric label="Beta vs. benchmark" value={num(analysis.portfolio.beta!)}/></section>
 
       <section className="card composition-card">
-        <div className="section-title"><div><span className="eyebrow">Composition & counterweights</span><h2>Style / sector / factor radar</h2></div><span className="pill">Automatic classification</span></div>
-        <p className="chart-intro">Each holding is assigned to its closest style, sector/sleeve, and primary-factor proxy using realized daily-return correlation. The radar plots share a 0–100% scale.</p>
+        <div className="section-title"><div><span className="eyebrow">Composition & counterweights</span><h2>Style / sector / factor classifications</h2></div><span className="pill">Automatic classification</span></div>
+        <p className="chart-intro">Each holding is assigned to its closest style, sector/sleeve, and primary-factor proxy using realized daily-return correlation.</p>
         <div className="table-tools"><label>Find holding<input value={classificationSearch} onChange={event => { setClassificationSearch(event.target.value.toUpperCase()); setClassificationPage(0); }} placeholder="Ticker"/></label><span>{classificationMatches.length} results</span></div>
         <div className="classification-table" role="table" aria-label="Automatically inferred holding classifications"><div className="classification-row classification-header" role="row"><span role="columnheader">Holding</span><span role="columnheader">Inferred style</span><span role="columnheader">Inferred sector / sleeve</span><span role="columnheader">Inferred factor</span><span role="columnheader">Confidence</span></div>
           {visibleClassifications.map(item => {
@@ -463,7 +449,6 @@ function App() {
           })}
         </div>
         <Pagination page={classificationPage} pages={classificationPages} onPage={setClassificationPage}/>
-        <div className="radar-grid"><RadarPlot title="Style" data={radarDataFromView(analysis.styleView, STYLE_OPTIONS)} color="#FF3B00"/><RadarPlot title="Sector" data={radarDataFromView(analysis.sectorView, SECTOR_OPTIONS)} color="#2E5CC8"/><RadarPlot title="Factor" data={radarDataFromView(analysis.factorView, FACTOR_OPTIONS)} color="#7B3FB5"/></div>
         <div className="balance-summary"><div><span>Style additions</span><strong>{analysis.styleView.additions.length ? analysis.styleView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div><div><span>Sector / sleeve additions</span><strong>{analysis.sectorView.additions.length ? analysis.sectorView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div><div><span>Factor additions</span><strong>{analysis.factorView.additions.length ? analysis.factorView.additions.map(item => item.name).join(" · ") : "No clear addition"}</strong></div></div>
         <p className="note">Classifications are best-fit historical inferences, not issuer classifications or factor-regression estimates. Addition scores combine low allocation exposure with low correlation to the portfolio.</p>
       </section>
@@ -504,16 +489,6 @@ function Pagination({ page, pages, onPage }: { page: number; pages: number; onPa
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div className="metric card"><span>{label}</span><strong>{value}</strong><small>Analyzed snapshot</small></div>;
-}
-
-function RadarPlot({ title, data, color }: { title: string; data: RadarDatum[]; color: string }) {
-  const size = 320, center = size / 2, radius = 88, count = Math.max(data.length, 3);
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  const point = (index: number, scale: number) => { const angle = -Math.PI / 2 + index * Math.PI * 2 / count; return [center + Math.cos(angle) * radius * scale, center + Math.sin(angle) * radius * scale] as const; };
-  const polygon = (scale: number) => Array.from({ length: count }, (_, index) => point(index, scale).join(",")).join(" ");
-  const exposurePolygon = data.map((item, index) => point(index, Math.min(1, item.value)).join(",")).join(" ");
-  const dominant = data.reduce((best, item) => item.value > best.value ? item : best, data[0] || { label: "None", value: 0 });
-  return <article className="radar-panel"><div className="radar-heading"><h3>{title}</h3><span>{dominant.label} {pct(dominant.value)}</span></div><svg viewBox={`0 0 ${size} ${size}`} role="img" aria-labelledby={`${slug}-radar-title ${slug}-radar-description`}><title id={`${slug}-radar-title`}>{title} exposure radar</title><desc id={`${slug}-radar-description`}>{data.map(item => `${item.label} ${pct(item.value)}`).join(", ")}. All axes run from zero to one hundred percent.</desc>{[.25, .5, .75, 1].map(scale => <g key={scale}><polygon className="radar-ring" points={polygon(scale)}/><text className="radar-scale" x={center + 4} y={center - radius * scale + 11}>{Math.round(scale * 100)}%</text></g>)}{data.map((item, index) => { const [axisX, axisY] = point(index, 1); const [labelX, labelY] = point(index, 1.34); const anchor = Math.abs(labelX - center) < 8 ? "middle" : labelX > center ? "start" : "end"; return <g key={item.label}><line className="radar-axis" x1={center} y1={center} x2={axisX} y2={axisY}/><text className="radar-label" x={labelX} y={labelY} textAnchor={anchor} dominantBaseline="middle"><tspan x={labelX}>{item.label}</tspan><tspan className="radar-value" x={labelX} dy="12">{pct(item.value, 0)}</tspan></text></g>; })}<polygon className="radar-shape" points={exposurePolygon} style={{ fill: color, stroke: color }}/>{data.map((item, index) => { const [x, y] = point(index, Math.min(1, item.value)); return <circle key={item.label} cx={x} cy={y} r="3.5" style={{ fill: color }}/>; })}</svg></article>;
 }
 
 function DirectionChart({ dates, series }: { dates: string[]; series: ChartSeries[] }) {

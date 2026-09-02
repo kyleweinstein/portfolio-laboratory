@@ -36,6 +36,13 @@ _ELIGIBLE_ANALYTICS_TYPES = {"EQUITY", "ETF", "STOCK"}
 _TRADING_DAYS = 252
 _MINIMUM_ALIGNED_PRICES = 61
 _MAX_PAIR_INSIGHTS = 20
+_OPTIMIZER_MAX_WEIGHT = 0.15
+_MIN_OPTIMIZER_HOLDINGS = 2
+
+
+def _optimizer_max_weight_for_holding_count(count: int) -> float:
+    return max(_OPTIMIZER_MAX_WEIGHT, 1 / max(count + 1, 1))
+
 
 STYLE_PROXIES = {
     "Large Growth": "VUG",
@@ -443,9 +450,14 @@ def calculate_published_analytics(
         covariance_matrix,
         risk_free_rate,
     )
-    optimized_allocation = tuple(
-        PublishedAllocation(symbol=symbol, weight_percent=weight * 100)
-        for symbol, weight in zip(normalized_symbols, optimized, strict=True)
+    optimized_symbols = (*normalized_symbols, "CASH")
+    optimized_allocation = (
+        tuple(
+            PublishedAllocation(symbol=symbol, weight_percent=weight * 100)
+            for symbol, weight in zip(optimized_symbols, optimized, strict=True)
+        )
+        if optimized
+        else ()
     )
 
     classifications = tuple(_classify(symbol, series) for symbol in normalized_symbols)
@@ -796,12 +808,15 @@ def _direction_lane(symbol: str, values: Sequence[float]) -> PublishedDirectionL
 
 
 def _project_capped_simplex(
-    values: Sequence[float], cap: float = 0.6
+    values: Sequence[float], cap: float = _OPTIMIZER_MAX_WEIGHT
 ) -> tuple[float, ...]:
     if not values:
         return ()
-    if len(values) * cap < 1:
-        return tuple(1 / len(values) for _ in values)
+    if len(values) * cap < 1 - 1e-12:
+        raise ValueError(
+            f"A {cap * 100:.0f}% holding cap requires at least "
+            f"{math.ceil(1 / cap)} holdings."
+        )
     low = min(value - cap for value in values)
     high = max(values)
     for _ in range(70):
@@ -823,10 +838,23 @@ def _optimize_max_sharpe(
     covariance_matrix: Sequence[Sequence[float]],
     risk_free_rate: float,
 ) -> tuple[float, ...]:
-    if len(target_weights) < 2:
-        return tuple(target_weights)
-    means = tuple(_moments(values)[0] for values in asset_returns)
-    weights = _project_capped_simplex(target_weights)
+    if len(target_weights) < _MIN_OPTIMIZER_HOLDINGS:
+        return ()
+    max_weight = _optimizer_max_weight_for_holding_count(len(target_weights))
+    means = tuple(_moments(values)[0] for values in asset_returns) + (
+        math.log1p(risk_free_rate) / _TRADING_DAYS,
+    )
+    asset_count = len(target_weights)
+    covariance_with_cash = tuple(
+        tuple(
+            0.0
+            if row == asset_count or column == asset_count
+            else covariance_matrix[row][column]
+            for column in range(asset_count + 1)
+        )
+        for row in range(asset_count + 1)
+    )
+    weights = _project_capped_simplex((*target_weights, 0.0), max_weight)
 
     def evaluate(candidate: Sequence[float]) -> tuple[float, tuple[float, ...]]:
         mean_daily = sum(
@@ -834,7 +862,7 @@ def _optimize_max_sharpe(
         )
         sigma_weights = tuple(
             sum(row[index] * candidate[index] for index in range(len(candidate)))
-            for row in covariance_matrix
+            for row in covariance_with_cash
         )
         variance = max(
             1e-16,
@@ -866,7 +894,8 @@ def _optimize_max_sharpe(
                 [
                     weights[index] + step * direction[index]
                     for index in range(len(weights))
-                ]
+                ],
+                max_weight,
             )
             if evaluate(candidate)[0] >= current_score - 1e-12:
                 accepted = True

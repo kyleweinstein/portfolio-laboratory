@@ -171,8 +171,10 @@ unavailable until a year-start performance anchor exists.
 
 Each successful revision also stores fixed-sleeve risk statistics,
 style/sector/factor classifications, a packed correlation map, top pair
-insights, direction comparison, rebalance buckets, and a nonnegative 60%-capped
-maximum-Sharpe scenario. Required holding or benchmark history failure aborts
+insights, direction comparison, rebalance buckets, and a nonnegative allocation
+that treats cash as a possible holding, uses a 15% cap when feasible, and raises
+the cap only to the minimum needed for smaller portfolios in its maximum-Sharpe
+scenario. Required holding or benchmark history failure aborts
 the new revision and retains the preceding one; optional proxy failures degrade
 only the affected classifications. These modeled analytics use public adjusted
 closes and eligible positive stocks/ETFs, never account identifiers, quantities,

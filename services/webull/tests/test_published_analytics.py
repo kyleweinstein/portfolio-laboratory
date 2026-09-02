@@ -84,7 +84,8 @@ def test_published_analytics_match_manual_math_and_public_contract() -> None:
     assert sum(
         item.weight_percent for item in result.optimized_allocation
     ) == pytest.approx(100)
-    assert max(item.weight_percent for item in result.optimized_allocation) <= 60.000001
+    assert result.optimized_allocation[-1].symbol == "CASH"
+    assert max(item.weight_percent for item in result.optimized_allocation) <= 25.000001
     assert all(item.weight_percent >= 0 for item in result.optimized_allocation)
     assert result.direction_comparison is not None
     assert len(result.direction_comparison.lanes) == 4
@@ -131,6 +132,33 @@ def test_constant_series_stays_finite_and_insufficient_alignment_fails() -> None
     fixture["SPY"] = _series("SPY", [0.001] * 30)
     with pytest.raises(PublishedAnalyticsError, match="enough aligned history"):
         calculate_published_analytics(("AAA", "FLAT"), (0.5, 0.5), "SPY", fixture)
+
+
+def test_published_optimizer_enforces_fifteen_percent_cap() -> None:
+    fixture = _fixture_series()
+    symbols = ("AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH")
+    base = [0.009 if index % 3 else -0.004 for index in range(100)]
+    for symbol_index, symbol in enumerate(symbols[3:], start=3):
+        returns = [
+            value * (1 + symbol_index * 0.05)
+            + (0.0002 * (symbol_index + 1) if (index + symbol_index) % 11 == 0 else 0)
+            for index, value in enumerate(base)
+        ]
+        fixture[symbol] = _series(symbol, returns)
+
+    result = calculate_published_analytics(
+        symbols,
+        tuple(1 / len(symbols) for _ in symbols),
+        "SPY",
+        fixture,
+    )
+
+    assert sum(
+        item.weight_percent for item in result.optimized_allocation
+    ) == pytest.approx(100)
+    assert result.optimized_allocation[-1].symbol == "CASH"
+    assert max(item.weight_percent for item in result.optimized_allocation) <= 15.000001
+    assert all(item.weight_percent >= 0 for item in result.optimized_allocation)
 
 
 def test_benchmark_returns_require_exact_published_dates() -> None:
