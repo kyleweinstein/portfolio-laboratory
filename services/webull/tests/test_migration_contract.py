@@ -136,3 +136,15 @@ def test_webull_statement_reconciliation_migration_supports_sparse_anchors() -> 
     assert "owner_github_id" in sql
     assert "raw_pdf" not in sql.lower()
     assert "extracted_text" not in sql.lower()
+
+
+def test_sparse_webull_statement_returns_are_withheld() -> None:
+    sql = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "0011_withhold_sparse_webull_statement_returns.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "SET publication_eligible = FALSE" in sql
+    assert "batch.contiguous_monthly_coverage = FALSE" in sql
+    assert "source.provider = 'webull'" in sql
