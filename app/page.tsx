@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from "react";
 import Link from "next/link";
 import DiversificationMap from "./diversification-map";
+import MonteCarloPanel from "./monte-carlo-panel";
 import { parsePortfolioCsv } from "./portfolio-csv";
 import WebullDashboard from "./webull-dashboard";
 import type { WebullSource } from "./webull-client";
@@ -435,6 +436,7 @@ function App() {
     {analysis && analysis.observationCount / analysis.symbols.length < 5 && <section className="notice statistical"><b>Limited observations per holding.</b> This analysis has {analysis.observationCount} aligned daily observations for {analysis.symbols.length} holdings ({(analysis.observationCount / analysis.symbols.length).toFixed(1)}×). Correlation estimates and optimized weights may be unstable.</section>}
 
     {analysis && <>
+      <MonteCarloPanel key={analysis.revision} returns={analysis.portfolioReturns} dirty={dirty}/>
       <section className="metric-grid"><Metric label="Annualized return" value={pct(analysis.portfolio.annualReturn)}/><Metric label="Annualized volatility" value={pct(analysis.portfolio.volatility)}/><Metric label="Sharpe ratio" value={num(analysis.portfolio.sharpe)}/><Metric label="Maximum drawdown" value={pct(analysis.portfolio.maxDrawdown)}/><Metric label="Historical VaR (95%)" value={pct(analysis.portfolio.var95)}/><Metric label="Beta vs. benchmark" value={num(analysis.portfolio.beta!)}/></section>
 
       <section className="card composition-card">
